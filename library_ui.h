@@ -550,6 +550,68 @@ void stopConversion(ImportJob &job,bool cancelled){
     fs::remove(dir,ignored);fs::remove(dir.parent_path(),ignored);
   }
 }
+fs::path copyDirectory(const fs::path &original){
+  return folder/L"optimized"/posterPath(original).stem()/std::to_wstring(fs::last_write_time(original).time_since_epoch().count());
+}
+std::wstring conversionCommand(const fs::path &original,int limit,bool cap,const fs::path &progress,const fs::path &directory){
+  wchar_t exe[32768];GetModuleFileName(nullptr,exe,32768);
+  auto script=fs::path(exe).parent_path().parent_path()/L"optimize.py";
+  auto quote=[](const fs::path &v){return L"\""+v.wstring()+L"\"";};
+  return L"python "+quote(script)+L" --height "+std::to_wstring(limit)+(cap?L" --cap-fps":L"")+
+         (progress.empty()?L"":L" --progress "+quote(progress))+L" --output "+quote(directory)+L" "+quote(original);
+}
+bool batteryFps=false,batteryCopyFailed=false;
+HANDLE batteryCopyProcess=nullptr,batteryCopyGroup=nullptr;
+fs::path batteryCopyVideo;
+fs::path batteryCopyPath(const fs::path &video){
+  std::error_code ignored;
+  if(video.empty() || !fs::exists(video,ignored))return {};
+  return copyDirectory(video)/(video.stem().wstring()+L"-original-30fps.mp4");
+}
+void stopBatteryCopy(bool cancelled){
+  ImportJob job;
+  job.process=batteryCopyProcess;job.group=batteryCopyGroup;job.result=batteryCopyPath(batteryCopyVideo);
+  stopConversion(job,cancelled);
+  batteryCopyProcess=batteryCopyGroup=nullptr;batteryCopyVideo.clear();
+}
+void refreshSettings();
+void updateBatteryCopy(){
+  std::error_code ignored;
+  auto copy=batteryFps && !batteryCopyFailed?batteryCopyPath(source):fs::path();
+  DWORD rate=0;
+  bool wanted=!copy.empty() && !fs::exists(copy,ignored);
+  if(wanted){readVideoDetails(source,nullptr,nullptr,&rate);wanted=rate>30500;}
+  if(batteryCopyProcess && (!wanted || batteryCopyVideo!=source))stopBatteryCopy(true);
+  if(!wanted || batteryCopyProcess)return;
+  auto command=conversionCommand(source,0,true,{},copy.parent_path());
+  batteryCopyVideo=source;
+  batteryCopyGroup=CreateJobObject(nullptr,nullptr);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  STARTUPINFO startup{sizeof startup};PROCESS_INFORMATION process{};
+  if(batteryCopyGroup && SetInformationJobObject(batteryCopyGroup,JobObjectExtendedLimitInformation,&limits,sizeof limits) &&
+     CreateProcess(nullptr,command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_SUSPENDED|BELOW_NORMAL_PRIORITY_CLASS,nullptr,nullptr,&startup,&process)){
+    batteryCopyProcess=process.hProcess;
+    if(AssignProcessToJobObject(batteryCopyGroup,process.hProcess)){
+      ResumeThread(process.hThread);CloseHandle(process.hThread);
+      return;
+    }
+    TerminateProcess(process.hProcess,1);CloseHandle(process.hThread);
+  }
+  stopBatteryCopy(true);
+  batteryCopyFailed=true;
+  refreshSettings();
+}
+void finishBatteryCopy(){
+  DWORD code=1;
+  GetExitCodeProcess(batteryCopyProcess,&code);
+  std::error_code ignored;
+  auto copy=batteryCopyPath(batteryCopyVideo);
+  bool made=code==0 && !copy.empty() && fs::exists(copy,ignored);
+  stopBatteryCopy(!made);
+  if(!made)batteryCopyFailed=true;
+  refreshSettings();
+}
 void readProgress(ImportJob &job){
   std::ifstream in(job.progress,std::ios::binary);
   if(!in || !job.duration)return;
@@ -639,15 +701,11 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   if(!convertChoice(w)){job->result=job->original;EndDialog(w,1);return TRUE;}
   std::wstring size=std::to_wstring(limit),suffix=limit?size+L"p":L"original";
   if(cap)suffix+=L"-30fps";
-  wchar_t exe[32768];GetModuleFileName(nullptr,exe,32768);
-  auto script=fs::path(exe).parent_path().parent_path()/L"optimize.py";
-  auto dir=folder/L"optimized"/posterPath(job->original).stem()/std::to_wstring(fs::last_write_time(job->original).time_since_epoch().count());
+  auto dir=copyDirectory(job->original);
   job->result=dir/(job->original.stem().wstring()+L"-"+suffix+L".mp4");
   if(fs::exists(job->result)){EndDialog(w,1);return TRUE;}
   job->progress=dir/(suffix+L".progress");
-  auto quote=[](const fs::path &v){return L"\""+v.wstring()+L"\"";};
-  auto command=L"python "+quote(script)+L" --height "+size+(cap?L" --cap-fps":L"")+L" --progress "+quote(job->progress)+
-               L" --output "+quote(dir)+L" "+quote(job->original);
+  auto command=conversionCommand(job->original,limit,cap,job->progress,dir);
   job->group=CreateJobObject(nullptr,nullptr);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -830,7 +888,7 @@ void setUiPage(bool settings) {
   titleHot = false;
   for (int id : {102,109})
     ShowWindow(GetDlgItem(libraryWindow, id), settings ? SW_HIDE : SW_SHOW);
-  for (int id : {103, 104, 105, 107})
+  for (int id : {103, 104, 105, 107, 111})
     ShowWindow(GetDlgItem(libraryWindow, id), settings ? SW_SHOW : SW_HIDE);
   SendMessage(GetDlgItem(libraryWindow, 103), BM_SETCHECK,
               maximumSavings ? BST_UNCHECKED : BST_CHECKED, 0);
@@ -838,7 +896,9 @@ void setUiPage(bool settings) {
               maximumSavings ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessage(GetDlgItem(libraryWindow, 105), BM_SETCHECK,
               batteryRule ? BST_CHECKED : BST_UNCHECKED, 0);
-  for(int id:{103,104,105,106})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
+  SendMessage(GetDlgItem(libraryWindow, 111), BM_SETCHECK,
+              batteryFps ? BST_CHECKED : BST_UNCHECKED, 0);
+  for(int id:{103,104,105,106,111})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
   InvalidateRect(libraryWindow, nullptr, FALSE);
 }
 // Keep the native button's input, radio grouping and accessibility behavior.
@@ -871,7 +931,12 @@ LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR
   }else if(m==WM_MOUSELEAVE && id!=100)InvalidateRect(w,nullptr,FALSE);
   return DefSubclassProc(w,m,a,b);
 }
+void refreshSettings(){
+  if(libraryWindow)InvalidateRect(GetDlgItem(libraryWindow,111),nullptr,FALSE);
+}
 const wchar_t *choiceDescription(int id){
+  if(id==111)return batteryCopyFailed?L"Couldn't make the 30 fps copy. Needs Python with FFmpeg.":
+                                      L"On battery, plays a 30 fps copy of wallpapers above 30 fps. The copy is made once, in the background.";
   return id==103?L"Resumes instantly when the desktop is uncovered. Keeps video memory reserved.":
          id==104?L"Releases video memory while paused or covered. Resuming takes a moment longer.":
                  L"On battery with Energy Saver on, shows a still and releases video memory.";
@@ -903,6 +968,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       control(L"BUTTON", L"Maximum savings", BS_AUTORADIOBUTTON, 104);
       control(L"BUTTON", L"Pause when Energy Saver is on",
               BS_AUTOCHECKBOX | WS_GROUP, 105);
+      control(L"BUTTON", L"30 fps on battery", BS_AUTOCHECKBOX, 111);
       control(L"BUTTON", L"Remove", BS_OWNERDRAW, 109);
       control(L"BUTTON", L"Settings", BS_OWNERDRAW, 106);
       control(L"BUTTON", L"Tray menu", BS_OWNERDRAW, 108);
@@ -932,6 +998,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       move(GetDlgItem(w,103),256,206,cw-284,68);
       move(GetDlgItem(w,104),256,278,cw-284,68);
       move(GetDlgItem(w,105),256,406,cw-284,68);
+      move(GetDlgItem(w,111),256,478,cw-284,68);
       if(batch)EndDeferWindowPos(batch);
       InvalidateRect(w, nullptr, FALSE);
       return 0;
@@ -947,7 +1014,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       DestroyWindow(w);
       return 0;
     case WM_GETMINMAXINFO:
-      ((MINMAXINFO *)b)->ptMinTrackSize = {px(720), px(555)};
+      ((MINMAXINFO *)b)->ptMinTrackSize = {px(720), px(627)};
       return 0;
     case WM_SHOWWINDOW:
       if (a) {
@@ -1089,6 +1156,16 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         for(int choice:{103,104})InvalidateRect(GetDlgItem(w,choice),nullptr,FALSE);
         return 0;
       }
+      if (id == 111) {
+        batteryFps = SendMessage(GetDlgItem(w, 111), BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (!WritePrivateProfileString(L"wallpaper", L"batteryFps", batteryFps ? L"1" : L"0",
+                                       (folder / L"settings.ini").c_str()))
+          throw E_FAIL;
+        batteryCopyFailed = false;
+        updateBatteryCopy();
+        refreshSettings();
+        return 0;
+      }
       if (id == 105) {
         batteryRule =
             SendMessage(GetDlgItem(w, 105), BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -1103,7 +1180,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
     }
     case WM_NOTIFY: {
       auto header=reinterpret_cast<NMHDR*>(b);
-      if(header->code!=NM_CUSTOMDRAW || header->idFrom<103 || header->idFrom>105)break;
+      if(header->code!=NM_CUSTOMDRAW || (header->idFrom!=111 && (header->idFrom<103 || header->idFrom>105)))break;
       auto &draw=*reinterpret_cast<NMCUSTOMDRAW*>(b);
       if(draw.dwDrawStage!=CDDS_PREPAINT)return CDRF_DODEFAULT;
       RECT bounds;GetClientRect(header->hwndFrom,&bounds);
@@ -1112,7 +1189,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       wchar_t label[128];GetWindowText(header->hwndFrom,label,128);
       int id=(int)header->idFrom;
       drawChoice(dc,units(bounds),label,choiceDescription(id),SendMessage(header->hwndFrom,BM_GETCHECK,0,0)==BST_CHECKED,
-                 id==105,true,hovered(header->hwndFrom),(draw.uItemState&CDIS_FOCUS) && keyboardCues(header->hwndFrom),cWindow);
+                 id==105 || id==111,true,hovered(header->hwndFrom),(draw.uItemState&CDIS_FOCUS) && keyboardCues(header->hwndFrom),cWindow);
       BitBlt(draw.hdc,0,0,bounds.right,bounds.bottom,dc,0,0,SRCCOPY);
       SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
       return CDRF_SKIPDEFAULT;

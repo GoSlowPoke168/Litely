@@ -57,6 +57,11 @@ constexpr UINT SmoothResume = 4, MaximumSavings = 5;
 bool maximumSavings = false, batteryRule = false, batteryOverride = false;
 HPOWERNOTIFY acHook, saverHook;
 void updateBattery();
+void updateBatteryCopy();
+void finishBatteryCopy();
+void stopBatteryCopy(bool cancelled);
+extern bool batteryFps;
+extern HANDLE batteryCopyProcess;
 bool posterPending = false, presented = false, parked = false;
 bool mediaStarted = false, applyingPause = false, resumeAfterPause = false;
 std::thread pauseWorker;
@@ -872,6 +877,7 @@ void activateSource(const fs::path &path) {
   paused = covered = freezePending = false;
   updateHooks();
   saveState();
+  updateBatteryCopy();
   visibility();
 }
 void selectFile() {
@@ -1198,6 +1204,8 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
                               file.c_str());
       GetPrivateProfileString(L"wallpaper", L"time", L"0", time, 64,
                               file.c_str());
+      batteryFps = GetPrivateProfileIntW(L"wallpaper", L"batteryFps", 0,
+                                         file.c_str()) != 0;
       batteryRule = GetPrivateProfileIntW(L"wallpaper", L"batteryRule", 0,
                                           file.c_str()) != 0;
       maximumSavings = GetPrivateProfileIntW(L"wallpaper", L"maximumSavings", 0,
@@ -1264,6 +1272,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
       saverHook = RegisterPowerSettingNotification(
           controller, &GUID_POWER_SAVING_STATUS, DEVICE_NOTIFY_WINDOW_HANDLE);
       updateBattery();
+      updateBatteryCopy();
       WTSRegisterSessionNotification(controller, NOTIFY_FOR_THIS_SESSION);
       visibility();
       if (paused)
@@ -1283,14 +1292,21 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
     const ULONGLONG sampleMs = 1000ull * std::max(4, _wtoi(secondsText));
     Clock::time_point pacingStart;
     while (running) {
-      HANDLE waits[] = {ticks, historyChanged};
+      HANDLE waits[3] = {ticks};
+      DWORD count = 1, historyAt = 0, copyAt = 0;
+      if (historyKey)
+        waits[historyAt = count++] = historyChanged;
+      if (batteryCopyProcess)
+        waits[copyAt = count++] = batteryCopyProcess;
       DWORD wait = MsgWaitForMultipleObjectsEx(
-          historyKey ? 2 : 1, waits, probe ? 100 : INFINITE, QS_ALLINPUT,
+          count, waits, probe ? 100 : INFINITE, QS_ALLINPUT,
           MWMO_INPUTAVAILABLE);
       if (wait == WAIT_FAILED)
         throw HRESULT_FROM_WIN32(GetLastError());
-      if (wait == WAIT_OBJECT_0 + 1 && historyKey)
+      if (historyAt && wait == WAIT_OBJECT_0 + historyAt)
         forgetPosterHistory();
+      if (copyAt && wait == WAIT_OBJECT_0 + copyAt)
+        finishBatteryCopy();
       if (wait == WAIT_OBJECT_0) {
         try {
           playbackTick();
@@ -1453,6 +1469,8 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
   }
   if (libraryWindow)
     DestroyWindow(libraryWindow);
+  if (batteryCopyProcess)
+    stopBatteryCopy(true);
   closePlayer();
   for (auto h : hooks)
     UnhookWinEvent(h);
