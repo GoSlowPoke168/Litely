@@ -36,6 +36,18 @@ void leanSurface(const LeanFrame &frame, ComPtr<ID3D11Texture2D> &texture, UINT 
   check(surface->GetResource(IID_PPV_ARGS(&texture)));
   check(surface->GetSubresourceIndex(&index));
 }
+void leanOutputType(IMFTransform *decoder, ComPtr<IMFMediaType> &type) {
+  for (DWORD i = 0;; i++) {
+    type.Reset();
+    check(decoder->GetOutputAvailableType(0, i, &type));
+    GUID subtype{};
+    type->GetGUID(MF_MT_SUBTYPE, &subtype);
+    if (subtype == MFVideoFormat_NV12)
+      break;
+  }
+  check(decoder->SetOutputType(0, type.Get(), 0));
+}
+// The demuxer loops by seeking; the decoder is never flushed, so the loop has no gap.
 void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceManager> devices) {
   HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   // Background processes get descheduled long enough to underrun the queue.
@@ -43,37 +55,36 @@ void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceMa
   HANDLE mm = AvSetMmThreadCharacteristicsW(L"Playback", &task);
   try {
     check(com);
-    ComPtr<IMFAttributes> attr;
-    check(MFCreateAttributes(&attr, 3));
-    check(attr->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, devices.Get()));
-    check(attr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
-    check(attr->SetUINT32(MF_LOW_LATENCY, TRUE));
     ComPtr<IMFSourceReader> reader;
-    check(MFCreateSourceReaderFromURL(file.c_str(), attr.Get(), &reader));
+    check(MFCreateSourceReaderFromURL(file.c_str(), nullptr, &reader));
     const DWORD video = (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM;
     check(reader->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE));
     check(reader->SetStreamSelection(video, TRUE));
-    ComPtr<IMFMediaType> wanted, type;
-    check(MFCreateMediaType(&wanted));
-    check(wanted->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
-    check(wanted->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-    check(reader->SetCurrentMediaType(video, nullptr, wanted.Get()));
-    check(reader->GetCurrentMediaType(video, &type));
+    ComPtr<IMFMediaType> native, type;
+    check(reader->GetNativeMediaType(video, 0, &native));
     UINT w = 0, h = 0, num = 0, den = 0;
-    check(MFGetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, &w, &h));
-    MFVideoArea area{};
-    if (SUCCEEDED(type->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, (UINT8 *)&area, sizeof area, nullptr)) &&
-        area.Area.cx && area.Area.cy) {
-      w = area.Area.cx;
-      h = area.Area.cy;
-    }
-    if (FAILED(MFGetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, &num, &den)) || !num || !den) {
+    check(MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h));
+    if (FAILED(MFGetAttributeRatio(native.Get(), MF_MT_FRAME_RATE, &num, &den)) || !num || !den) {
       num = 60;
       den = 1;
     }
-    UINT matrix = MFGetAttributeUINT32(type.Get(), MF_MT_YUV_MATRIX, 0);
-    bool bt601 = matrix == MFVideoTransferMatrix_BT601 || (matrix != MFVideoTransferMatrix_BT709 && h < 720);
-    bool full = MFGetAttributeUINT32(type.Get(), MF_MT_VIDEO_NOMINAL_RANGE, 0) == MFNominalRange_0_255;
+    MFT_REGISTER_TYPE_INFO input{MFMediaType_Video, {}};
+    check(native->GetGUID(MF_MT_SUBTYPE, &input.guidSubtype));
+    IMFActivate **found = nullptr;
+    UINT32 count = 0;
+    check(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER, &input,
+                    nullptr, &found, &count));
+    ComPtr<IMFTransform> decoder;
+    HRESULT made = count ? found[0]->ActivateObject(IID_PPV_ARGS(&decoder)) : MF_E_TOPO_CODEC_NOT_FOUND;
+    for (UINT32 i = 0; i < count; i++)
+      found[i]->Release();
+    CoTaskMemFree(found);
+    check(made);
+    check(decoder->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, (ULONG_PTR)devices.Get()));
+    check(decoder->SetInputType(0, native.Get(), 0));
+    leanOutputType(decoder.Get(), type);
+    check(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
+    check(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0));
     PROPVARIANT length{};
     double seconds = 0;
     if (SUCCEEDED(reader->GetPresentationAttribute((DWORD)MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &length)) &&
@@ -81,44 +92,63 @@ void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceMa
       seconds = length.uhVal.QuadPart / 1e7;
     PropVariantClear(&length);
     const LONGLONG frameTime = 10000000ll * den / num;
-    LONGLONG offset = 0, last = 0, from = LONGLONG(start * 1e7), loopEnd = 0;
-    bool looped = false;
+    LONGLONG offset = 0, last = -1, from = LONGLONG(start * 1e7);
     if (from > 0) {
       PROPVARIANT to{};
       to.vt = VT_I8;
       to.hVal.QuadPart = from;
       check(reader->SetCurrentPosition(GUID_NULL, to));
     }
-    unsigned decoded = 0;
+    unsigned fed = 0;
     bool first = true;
     for (;;) {
-      DWORD flags = 0;
-      LONGLONG ts = 0;
+      {
+        std::lock_guard<std::mutex> hold(leanLock);
+        if (leanStop)
+          break;
+      }
+      MFT_OUTPUT_DATA_BUFFER out{};
+      DWORD status = 0;
+      HRESULT hr = decoder->ProcessOutput(0, 1, &out, &status);
+      if (out.pEvents)
+        out.pEvents->Release();
       ComPtr<IMFSample> sample;
-      check(reader->ReadSample(video, 0, nullptr, &flags, &ts, &sample));
-      if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
-        if (!decoded)
-          throw MF_E_INVALID_STREAM_DATA;
-        decoded = 0;
-        PROPVARIANT to{};
-        to.vt = VT_I8;
-        check(reader->SetCurrentPosition(GUID_NULL, to));
-        loopEnd = offset + last + frameTime;
-        looped = true;
-        from = 0;
+      sample.Attach(out.pSample);
+      if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
+        leanOutputType(decoder.Get(), type);
         continue;
       }
+      if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+        DWORD flags = 0;
+        LONGLONG stamp = 0;
+        ComPtr<IMFSample> packet;
+        check(reader->ReadSample(video, 0, nullptr, &flags, &stamp, &packet));
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
+          if (!fed)
+            throw MF_E_INVALID_STREAM_DATA;
+          fed = 0;
+          PROPVARIANT to{};
+          to.vt = VT_I8;
+          check(reader->SetCurrentPosition(GUID_NULL, to));
+          from = 0;
+        } else if (packet) {
+          ++fed;
+          check(decoder->ProcessInput(0, packet.Get(), 0));
+        }
+        continue;
+      }
+      check(hr);
       if (!sample)
         continue;
-      ++decoded;
-      last = ts;
-      // The first timestamp of a clip is not always zero.
-      if (looped) {
-        offset = loopEnd - ts;
-        looped = false;
-      }
-      if (ts < from)
+      LONGLONG ts = 0;
+      check(sample->GetSampleTime(&ts));
+      // Timestamps running backwards mark the loop point; a clip's first one is not always zero.
+      if (last >= 0 && ts < last) {
+        offset += last + frameTime - ts;
+        from = 0;
+      } else if (ts < from)
         continue;
+      last = ts;
       LeanFrame frame;
       frame.sample = sample;
       frame.pts = ts;
@@ -134,7 +164,7 @@ void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceMa
             FAILED(surface->GetSubresourceIndex(&index)))
           throw MF_E_UNSUPPORTED_D3D_TYPE;
         texture->GetDesc(&desc);
-        if (desc.Format != DXGI_FORMAT_NV12 || desc.Width < w || desc.Height < h)
+        if (desc.Format != DXGI_FORMAT_NV12 || desc.Width < w || desc.Height < h || (w | h) & 1)
           throw MF_E_UNSUPPORTED_D3D_TYPE;
       }
       std::unique_lock<std::mutex> hold(leanLock);
@@ -142,6 +172,9 @@ void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceMa
       if (leanStop)
         break;
       if (first) {
+        UINT matrix = MFGetAttributeUINT32(type.Get(), MF_MT_YUV_MATRIX, 0);
+        bool bt601 = matrix == MFVideoTransferMatrix_BT601 || (matrix != MFVideoTransferMatrix_BT709 && h < 720);
+        bool full = MFGetAttributeUINT32(type.Get(), MF_MT_VIDEO_NOMINAL_RANGE, 0) == MFNominalRange_0_255;
         leanWidth = w;
         leanHeight = h;
         frameRate = double(num) / den;
@@ -225,8 +258,11 @@ bool leanAcquire(LONGLONG *pts) {
     leanRebase = false;
   } else if (LONGLONG lateness = now - leanBase - frame.time; lateness > leanFrameTime) {
     leanBase += lateness;
-    ++leanLate;
-    leanWorstLate = std::max(leanWorstLate, lateness / 1e4);
+    // One refresh of delay is Present waiting on the display, not a stutter.
+    if (lateness > leanFrameTime * 3 / 2) {
+      ++leanLate;
+      leanWorstLate = std::max(leanWorstLate, lateness / 1e4);
+    }
   }
   ComPtr<ID3D11Texture2D> texture, back;
   UINT index;
