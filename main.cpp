@@ -139,6 +139,7 @@ void memory(const wchar_t *label) {
 using Clock = std::chrono::steady_clock;
 HANDLE surfaceHandle;
 fs::path leanFailedFor;
+std::wstring playbackPath;
 #include "lean_player.h"
 void closePlayer() {
   if (ticks)
@@ -1088,6 +1089,14 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
         else
           setupOutput();
         ready = true;
+        {
+          ComPtr<IDXGIDevice> dx;
+          ComPtr<IDXGIAdapter> adapter;
+          DXGI_ADAPTER_DESC about{};
+          if (SUCCEEDED(device.As(&dx)) && SUCCEEDED(dx->GetAdapter(&adapter)))
+            adapter->GetDesc(&about);
+          playbackPath = (leanActive ? L"Hardware decode, direct · " : L"Compatibility mode · ") + std::wstring(about.Description);
+        }
         if (position > 0 && !leanActive) {
           seekStarted = GetTickCount64();
           check(engine->SetCurrentTime(position));

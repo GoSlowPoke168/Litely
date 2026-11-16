@@ -20,7 +20,8 @@ Litely runs as a single instance. Quit it from the tray before rebuilding if the
 
 | File | Responsibility |
 | --- | --- |
-| `main.cpp` | Tray/controller, Media Foundation playback, GPU rendering, desktop visibility, frame capture, pause/resume, playback probe |
+| `lean_player.h` | Lean playback path: decode thread, frame queue, NV12 presentation, still conversion. Included by main.cpp |
+| `main.cpp` | Tray/controller, Media Engine fallback playback, GPU rendering, desktop visibility, frame capture, pause/resume, playback probe |
 | `library_ui.h` | Library and Settings, import wizard, preview extraction, rename/remove, usage sampling, DPI-aware painting. Included by main.cpp |
 | `litely.rc`, `resource.h`, `app.manifest` | Native dialogs and icon resources, common-controls v6 for themed controls |
 | `optimize.py` | Optional offline conversion. Requires Python and either FFmpeg on PATH or imageio-ffmpeg |
@@ -29,7 +30,7 @@ Litely runs as a single instance. Quit it from the tray before rebuilding if the
 
 ## Playback and savings
 
-One muted decoder feeds a shared GPU surface through DirectComposition. An exposed area on any monitor keeps the animation running. Full coverage stops the clock. After about two seconds, Litely can apply a still and park or release the renderer. **Smooth resume** retains the renderer for fast restart. **Maximum savings** releases it. Manual pause saves the last submitted frame as the Windows background, reusing a stable per-video BMP path. The optional battery override applies on battery power with Windows Energy Saver active and temporarily uses maximum savings.
+Playback has two paths. The lean path (`lean_player.h`) feeds a hardware decoder directly on a worker thread, queues three frames, and copies each NV12 frame into an NV12 composition swap chain from the UI thread; looping re-seeks only the demuxer, so the decoder is never flushed. If it cannot start, Litely reopens the file with the original Media Engine path. `LITELY_PIPELINE=legacy` forces that fallback, and Settings names the active path. Either way one muted decoder feeds a shared GPU surface through DirectComposition. An exposed area on any monitor keeps the animation running. Full coverage stops the clock. After about two seconds, Litely can apply a still and park or release the renderer. **Smooth resume** retains the renderer for fast restart. **Maximum savings** releases it. Manual pause saves the last submitted frame as the Windows background, reusing a stable per-video BMP path. The optional battery override applies on battery power with Windows Energy Saver active and temporarily uses maximum savings.
 
 The Library shows process CPU, working-set RAM, and local GPU allocation. Its savings comparison uses recent playing samples for the active source while the Library is open. Negative deltas mean lower consumption. A previous Miyabi 720p probe measured 241 frames and 1.08 CPU-seconds over four seconds of playback, then zero measured CPU-seconds during its pause sample. Smooth resume retained similar memory. These are single-machine observations. The wizard’s decoded-frame size and pixel-rate estimates describe the video workload, not total memory or GPU utilization.
 
@@ -46,7 +47,10 @@ User data lives in `%LOCALAPPDATA%\Litely`. `settings.ini` stores active playbac
 - Hovering the hero title shows a translucent outline with a pencil (`titleBox`, set during paint). Clicking inside it opens Rename.
 - Shapes use `fillRound`/`strokeRound`/`roundCorners`, which draw in device pixels from 96-dpi units. Dialogs paint under `DpiScope` with their own DPI.
 - Explorer writes `BackgroundHistoryPathN` after `SetWallpaper` returns. The main loop therefore waits on a registry-change event and drops paths inside the data folder.
-- The import estimate model (GPU ≈ 9 + 19.5 MiB/Mpx, RAM ≈ 103 + 17.5 MiB/Mpx) came from `Test-Playback.ps1` runs at 720p–2160p on one PC. Frame rate changed CPU only.
+- The import estimate model (GPU ≈ 8 + 19.8 MiB/Mpx, RAM ≈ 62 + 9.5 MiB/Mpx) was fitted to 20 s lean-path `Test-Playback.ps1` runs at 720p–2160p on one PC. GPU fits within 3%; RAM is not linear in pixels and only holds within 15%. Frame rate changed CPU only.
+- `Test-Savings.ps1` (medians of five 20 s runs, lean vs Media Engine, November 16): Miyabi 1080p60 CPU 13.4% vs 21.0% of a core, RAM 81.8 vs 158.4 MiB, GPU 48.5 vs 59.5 MiB; Furina 1080p30 CPU 5.9% vs 10.2%, RAM 74.6 vs 126.7 MiB, GPU 48.5 vs 59.5 MiB. Zero late frames; stills and on-screen pixels identical.
+- Lean-path lessons: the decode and UI threads run in the MMCSS Playback class, because a background process otherwise stalls 17–45 ms. `IDXGIDevice3::Trim` doubled playback CPU and must stay out. A delay of one refresh is `Present` waiting on the display, so only delays over 1.5 frames count as late. Working set settles about 20 MiB lower after 20 s than at 4 s.
+- Probe variables: `LITELY_PROBE_SECONDS` (sample length), `LITELY_PROBE_TOPMOST` (1:1 topmost window plus a screen grab). Test hooks: `LITELY_TEST_VISIBLE` (treat the desktop as uncovered), controller `WM_COMMAND` 2 (pause/resume). `Test-Stress.ps1` uses a temporary `LOCALAPPDATA`; pass it with `ProcessStartInfo`, since `Start-Process` does not forward a changed environment reliably.
 - Conversion runs in a kill-on-close job object. `optimize.py --progress` forwards to FFmpeg `-progress`. Cancel removes scratch folders.
 - A popup reading "could not complete that action" now includes its HRESULT. The suspected cause, a failed BMP replace, now retries for up to 500 ms.
 

@@ -462,9 +462,9 @@ struct ImportJob {
   int percent=-1,tick=0;
 };
 ImportJob *activeImport=nullptr;
-// GPU and RAM per decoded megapixel, measured with Test-Playback.ps1 from 720p to 2160p.
-double videoMemory(double megapixels){return 9+19.5*megapixels;}
-double processMemory(double megapixels){return 103+17.5*megapixels;}
+// GPU and RAM per decoded megapixel, fitted to 20 s Test-Playback.ps1 runs from 720p to 2160p.
+double videoMemory(double megapixels){return 8+19.8*megapixels;}
+double processMemory(double megapixels){return 62+9.5*megapixels;}
 double importScale(const ImportJob &job,int limit){
   if(!limit || !job.width || !job.height)return 1;
   return std::min({1.,limit/(double)job.height,limit*16/9./job.width});
@@ -1192,6 +1192,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       if(settingsPage){
         paintText(dc,L"Settings",{left,118,right,158},28,cText,FW_SEMIBOLD);
         paintText(dc,L"Performance",{left,176,right,198},15,cText,FW_SEMIBOLD);
+        paintText(dc,playbackPath.empty()?L"Playback starts with the next wallpaper":playbackPath,{left+120,178,right,198},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
         {UiDC mapping(dc);panel(dc,{left,358,right,359},cLine);}
         paintText(dc,L"Battery",{left,376,right,398},15,cText,FW_SEMIBOLD);
       }else{
