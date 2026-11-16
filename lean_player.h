@@ -229,6 +229,8 @@ void leanDropStill() {
   leanProcessor.Reset();
   leanEnumerator.Reset();
   leanStillTexture.Reset();
+  if (context)
+    context->Flush();
 }
 void leanClose() {
   leanJoin();

@@ -739,6 +739,7 @@ void resumePlayer() {
   startClock();
   parked = false;
 }
+bool testVisible = GetEnvironmentVariableW(L"LITELY_TEST_VISIBLE", nullptr, 0) != 0;
 void visibility() {
   if (probe)
     return;
@@ -762,7 +763,7 @@ void visibility() {
   bool any = false;
   for (auto &d : displays) {
     Coverage c{CreateRectRgnIndirect(&d.work)};
-    if (!locked && !screenOff && c.region)
+    if (!locked && !screenOff && c.region && !testVisible)
       EnumWindows(subtractWindow, reinterpret_cast<LPARAM>(&c));
     RECT box{};
     bool wasVisible = d.visible;
@@ -972,6 +973,10 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
     case WM_COMMAND:
       if (a == 10 || a == 11) {
         openLibrary(a == 11);
+        return 0;
+      }
+      if (a == 2) {
+        toggle();
         return 0;
       }
       if (a == SmoothResume || a == MaximumSavings) {
