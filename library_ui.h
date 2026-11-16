@@ -1,0 +1,1345 @@
+﻿#include <propkey.h>
+#include <mfreadwrite.h>
+#include <regex>
+#include <set>
+#include <sstream>
+#include <uxtheme.h>
+#pragma comment(lib,"mfreadwrite.lib")
+
+// Native library resources exist only while this window is open.
+HWND libraryWindow = nullptr, libraryList = nullptr;
+bool settingsPage = false;
+std::vector<fs::path> libraryFiles;
+HFONT uiFont = nullptr;
+HBRUSH uiBrush = nullptr;
+ULONG_PTR graphicsToken = 0;
+std::unique_ptr<Gdiplus::Bitmap> previewImage;
+std::wstring statsText = L"Measuring...";
+double lastCPU = 0;
+ULONGLONG lastSample = 0;
+float previewOpacity = 1;
+int libraryDpi = 96;
+int px(int v){return MulDiv(v,libraryDpi,96);}
+int dip(int v){return MulDiv(v,96,libraryDpi);}
+RECT units(RECT r){return {dip(r.left),dip(r.top),dip(r.right),dip(r.bottom)};}
+struct UiDC {
+  HDC dc; int saved;
+  UiDC(HDC h):dc(h),saved(SaveDC(h)){
+    SetMapMode(h,MM_ANISOTROPIC);
+    SetWindowExtEx(h,96,96,nullptr);SetViewportExtEx(h,libraryDpi,libraryDpi,nullptr);
+  }
+  ~UiDC(){RestoreDC(dc,saved);}
+};
+constexpr COLORREF cWindow=RGB(25,27,37),cSidebar=RGB(23,25,35),cRaised=RGB(38,40,54),
+  cHover=RGB(42,43,57),cLine=RGB(52,53,65),cSelected=RGB(48,44,64),cSelectedLine=RGB(85,70,96),
+  cAccent=RGB(215,196,255),cAccentHot=RGB(230,216,255),cAccentDown=RGB(193,167,241),cInk=RGB(36,27,53),
+  cText=RGB(245,243,250),cSoft=RGB(217,215,225),cMuted=RGB(172,174,191),cDisabled=RGB(121,115,134);
+bool fontExists(const wchar_t *family){
+  HDC dc=GetDC(nullptr);LOGFONT query{};query.lfCharSet=DEFAULT_CHARSET;wcscpy_s(query.lfFaceName,family);
+  bool found=false;
+  EnumFontFamiliesEx(dc,&query,[](const LOGFONT*,const TEXTMETRIC*,DWORD,LPARAM out){*(bool*)out=true;return 0;},(LPARAM)&found,0);
+  ReleaseDC(nullptr,dc);return found;
+}
+const wchar_t *textFace(){static auto face=fontExists(L"Segoe UI Variable Text")?L"Segoe UI Variable Text":L"Segoe UI";return face;}
+const wchar_t *displayFace(){static auto face=fontExists(L"Segoe UI Variable Display")?L"Segoe UI Variable Display":L"Segoe UI";return face;}
+const wchar_t *iconFace(){static auto face=fontExists(L"Segoe Fluent Icons")?L"Segoe Fluent Icons":L"Segoe MDL2 Assets";return face;}
+struct DpiScope{int old;DpiScope(int dpi):old(libraryDpi){libraryDpi=dpi;}~DpiScope(){libraryDpi=old;}};
+// GDI+ drawing in device pixels with anti-aliasing; callers pass 96-dpi layout units.
+struct DeviceDC{HDC dc;int saved;DeviceDC(HDC h):dc(h),saved(SaveDC(h)){SetMapMode(h,MM_TEXT);}~DeviceDC(){RestoreDC(dc,saved);}};
+struct Smooth:DeviceDC{
+  Gdiplus::Graphics g;
+  Smooth(HDC h):DeviceDC(h),g(h){g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);}
+};
+float fpx(float v){return v*libraryDpi/96.f;}
+Gdiplus::RectF frect(RECT r){return {fpx((float)r.left),fpx((float)r.top),fpx((float)(r.right-r.left)),fpx((float)(r.bottom-r.top))};}
+Gdiplus::Color gdip(COLORREF c,BYTE alpha=255){return Gdiplus::Color(alpha,GetRValue(c),GetGValue(c),GetBValue(c));}
+void roundPath(Gdiplus::GraphicsPath &path,Gdiplus::RectF r,float radius){
+  float d=std::min({radius*2,r.Width,r.Height});
+  path.AddArc(r.X,r.Y,d,d,180,90);path.AddArc(r.GetRight()-d,r.Y,d,d,270,90);
+  path.AddArc(r.GetRight()-d,r.GetBottom()-d,d,d,0,90);path.AddArc(r.X,r.GetBottom()-d,d,d,90,90);
+  path.CloseFigure();
+}
+void fillRound(HDC dc,RECT r,COLORREF color,float radius,BYTE alpha=255){
+  Smooth s(dc);Gdiplus::GraphicsPath path;roundPath(path,frect(r),fpx(radius));
+  Gdiplus::SolidBrush brush(gdip(color,alpha));s.g.FillPath(&brush,&path);
+}
+void strokeRound(HDC dc,RECT r,COLORREF color,float radius,float thickness,BYTE alpha=255){
+  Smooth s(dc);auto box=frect(r);float w=fpx(thickness);box.Inflate(-w/2,-w/2);
+  Gdiplus::GraphicsPath path;roundPath(path,box,fpx(radius)-w/2);
+  Gdiplus::Pen pen(gdip(color,alpha),w);s.g.DrawPath(&pen,&path);
+}
+// Paints the background colour outside a rounded rectangle so image corners are anti-aliased.
+void roundCorners(HDC dc,RECT r,float radius,COLORREF background){
+  Smooth s(dc);auto box=frect(r);Gdiplus::GraphicsPath path(Gdiplus::FillModeAlternate);
+  path.AddRectangle(box);roundPath(path,box,fpx(radius));
+  Gdiplus::SolidBrush brush(gdip(background));s.g.FillPath(&brush,&path);
+}
+void drawCover(HDC dc,Gdiplus::Image *image,RECT r,float opacity=1){
+  Smooth s(dc);auto box=frect(r);
+  float iw=(float)image->GetWidth(),ih=(float)image->GetHeight();
+  float scale=std::max(box.Width/iw,box.Height/ih),sw=box.Width/scale,sh=box.Height/scale;
+  Gdiplus::ColorMatrix matrix={1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,opacity,0,0,0,0,0,1};
+  Gdiplus::ImageAttributes attributes;attributes.SetColorMatrix(&matrix);
+  attributes.SetWrapMode(Gdiplus::WrapModeTileFlipXY);
+  s.g.DrawImage(image,box,(iw-sw)/2,(ih-sh)/2,sw,sh,Gdiplus::UnitPixel,&attributes);
+}
+int paintText(HDC dc, const std::wstring &text, RECT rect, int size,
+               COLORREF color, int weight=FW_NORMAL, UINT flags=DT_LEFT|DT_TOP|DT_SINGLELINE,
+               const wchar_t *family=nullptr) {
+  // Measure and rasterize in device pixels so fractional DPI doesn't round glyph advances in layout units.
+  DeviceDC deviceDc(dc);
+  rect={px(rect.left),px(rect.top),px(rect.right),px(rect.bottom)};
+  if(!family)family=size>=24?displayFace():textFace();
+  HFONT font =
+      CreateFont(-px(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+                 DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, family);
+  auto old = SelectObject(dc, font);
+  SetTextColor(dc, color);
+  SetBkMode(dc, TRANSPARENT);
+  SIZE extent{};GetTextExtentPoint32(dc,text.c_str(),(int)text.size(),&extent);
+  DrawText(dc,text.c_str(),-1,&rect,flags|DT_END_ELLIPSIS|DT_NOPREFIX);
+  SelectObject(dc, old);
+  DeleteObject(font);
+  return dip(extent.cx);
+}
+void paintIcon(HDC dc,const wchar_t *glyph,RECT box,int size,COLORREF color){
+  paintText(dc,glyph,box,size,color,FW_NORMAL,DT_CENTER|DT_VCENTER|DT_SINGLELINE,iconFace());
+}
+void focusRing(HDC dc,RECT r,float radius){strokeRound(dc,r,cAccent,radius,2);}
+std::vector<std::unique_ptr<Gdiplus::Bitmap>> rowImages;
+RECT titleBox{};
+bool titleHot=false;
+std::wstring cpuValue=L"—",ramValue=L"—",gpuValue=L"—";
+int hoveredRow = -1;
+int heroBottom(int widthDip, int heightDip) {
+  return std::min(heightDip - 212, 92 + MulDiv(widthDip - 292, 100, 197));
+}
+std::vector<std::wstring> videoDetails;
+std::wstring cleanName(std::wstring name){
+  for(auto &c:name)if(c==L'-'||c==L'_'||c==L'.')c=L' ';
+  static const std::wregex tag(LR"(\d{3,4}p|\d{3,5}x\d{3,5}|\d{2,3}fps|original|[48]k|u?hd|fhd)",std::regex::icase);
+  static const std::wregex glued(LR"((.*[a-z])([48]k|u?hd|fhd))",std::regex::icase);
+  static const std::set<std::wstring> minor{L"a",L"an",L"and",L"at",L"by",L"for",L"in",L"of",L"on",L"the",L"to"};
+  std::wistringstream words(name);std::wstring word,out;
+  while(words>>word){
+    if(std::regex_match(word,tag))continue;
+    std::wsmatch parts;if(std::regex_match(word,parts,glued))word=parts[1];
+    bool lower=std::none_of(word.begin(),word.end(),[](wchar_t c){return iswupper(c)!=0;});
+    if(lower && (out.empty() || !minor.count(word)))word[0]=towupper(word[0]);
+    out+=(out.empty()?L"":L" ")+word;
+  }
+  return out.empty()?name:out;
+}
+std::wstring readVideoDetails(const fs::path &path,DWORD *widthOut=nullptr,DWORD *heightOut=nullptr,DWORD *rateOut=nullptr,ULONGLONG *durationOut=nullptr) {
+  ComPtr<IPropertyStore> properties;
+  std::wstring details;
+  if (SUCCEEDED(SHGetPropertyStoreFromParsingName(path.c_str(), nullptr, GPS_DEFAULT,
+                                                  IID_PPV_ARGS(&properties)))) {
+    auto number = [&](REFPROPERTYKEY key) {
+      PROPVARIANT value{};
+      DWORD result = 0;
+      if (SUCCEEDED(properties->GetValue(key, &value)) && value.vt == VT_UI4)
+        result = value.ulVal;
+      PropVariantClear(&value);
+      return result;
+    };
+    auto frameHeight = number(PKEY_Video_FrameHeight);
+    auto rate = number(PKEY_Video_FrameRate);
+    if(widthOut)*widthOut=number(PKEY_Video_FrameWidth);
+    if(heightOut)*heightOut=frameHeight;
+    if(rateOut)*rateOut=rate;
+    if(durationOut){
+      PROPVARIANT value{};
+      if(SUCCEEDED(properties->GetValue(PKEY_Media_Duration,&value)) && value.vt==VT_UI8)*durationOut=value.uhVal.QuadPart;
+      PropVariantClear(&value);
+    }
+    if (frameHeight) details = std::to_wstring(frameHeight) + L"p";
+    if (rate) {
+      wchar_t fps[32];
+      swprintf_s(fps, rate % 1000 ? L"%.2f" : L"%.0f", rate / 1000.);
+      details += (details.empty()?L"":L" · ") + std::wstring(fps) + L" fps";
+    }
+  }
+  return details.empty()?L"MP4 video":details;
+}
+bool isPlaybackCopy(const fs::path &video){
+  auto copies=(folder/L"optimized").wstring()+L"\\";
+  return !_wcsnicmp(video.c_str(),copies.c_str(),copies.size());
+}
+void menu(const POINT *anchor=nullptr);
+std::wstring displayName(const fs::path &p){
+  wchar_t custom[256]{};
+  auto key=posterPath(p).stem().wstring();
+  GetPrivateProfileString(L"names",key.c_str(),L"",custom,256,(folder/L"library-names.ini").c_str());
+  if(*custom)return custom;
+  return cleanName(p.stem().wstring());
+}
+fs::path thumbnailPath(const fs::path &video){
+  auto path=posterPath(video);
+  path.replace_extension(L".preview.bmp");
+  return path;
+}
+fs::path artworkPath(const fs::path &video){
+  auto thumbnail=thumbnailPath(video);
+  return fs::exists(thumbnail)?thumbnail:posterPath(video);
+}
+void panel(HDC dc,RECT r,COLORREF color){
+  HBRUSH b=CreateSolidBrush(color);FillRect(dc,&r,b);DeleteObject(b);
+}
+void fillRect(HDC dc,RECT r,COLORREF color){UiDC mapping(dc);panel(dc,r,color);}
+
+void updateBattery() {
+  SYSTEM_POWER_STATUS power{};
+  bool next = batteryRule && GetSystemPowerStatus(&power) &&
+              power.ACLineStatus == 0 && power.SystemStatusFlag == 1;
+  if (next == batteryOverride)
+    return;
+  batteryOverride = next;
+  if (next) {
+    if (!paused && !parked && ready && presented && !applyingPause)
+      freeze(false);
+    else if (!applyingPause)
+      closePlayer();
+    status(L"Litely - paused for Energy Saver");
+  } else if (!paused && !applyingPause)
+    visibility();
+}
+void saveLibrary() {
+  if (folder.empty())
+    return;
+  auto temp = folder / L"library.tmp", dest = folder / L"library.txt";
+
+  std::ofstream bytes(temp, std::ios::binary);
+  const wchar_t bom = 0xfeff;
+  bytes.write((const char *)&bom, sizeof bom);
+  for (auto &path : libraryFiles) {
+    auto line = path.wstring() + L"\n";
+    bytes.write((const char *)line.data(), line.size() * sizeof(wchar_t));
+  }
+  bytes.close();
+  if (!bytes ||
+      !MoveFileEx(temp.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING))
+    throw E_FAIL;
+}
+void addLibrary(const fs::path &path) {
+  if (path.empty())
+    return;
+  auto canonical = fs::weakly_canonical(path);
+  for (auto &p : libraryFiles)
+    if (!_wcsicmp(p.c_str(), canonical.c_str()))
+      return;
+  libraryFiles.push_back(canonical);
+}
+int selectedIndex() {
+  return (int)SendMessage(libraryList, LB_GETCURSEL, 0, 0);
+}
+std::unique_ptr<Gdiplus::Bitmap> readArtwork(const fs::path &path,bool thumbnail=false){
+  Gdiplus::Bitmap file(path.c_str());
+  if(file.GetLastStatus()!=Gdiplus::Ok)return {};
+  if(thumbnail){
+    auto thumb=std::make_unique<Gdiplus::Bitmap>(106,88,PixelFormat32bppPARGB);
+    Gdiplus::Graphics g(thumb.get());
+    float sw=(float)file.GetWidth(),sh=(float)file.GetHeight(),scale=std::min(sw/106,sh/88);
+    g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);
+    if(g.DrawImage(&file,Gdiplus::RectF(0,0,106,88),(sw-106*scale)/2,(sh-88*scale)/2,106*scale,88*scale,Gdiplus::UnitPixel)!=Gdiplus::Ok)return {};
+    return thumb;
+  }
+  return std::unique_ptr<Gdiplus::Bitmap>(file.Clone(0,0,file.GetWidth(),file.GetHeight(),PixelFormat32bppARGB));
+}
+constexpr UINT PreviewReady=WM_APP+30;
+unsigned previewRequest=0;
+void requestPreview(const fs::path &video){
+  auto path=thumbnailPath(video);
+  if(fs::exists(path))return;
+  unsigned request=++previewRequest;
+  HWND window=libraryWindow;
+  std::thread([video,path,request,window]{
+    HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+    if(FAILED(initialized))return;
+    try{
+      ComPtr<IShellItemImageFactory> factory;
+      HBITMAP image=nullptr;
+      if(SUCCEEDED(SHCreateItemFromParsingName(video.c_str(),nullptr,IID_PPV_ARGS(&factory))) &&
+         SUCCEEDED(factory->GetImage({768,432},SIIGBF_THUMBNAILONLY,&image))){
+        Gdiplus::GdiplusStartupInput input;ULONG_PTR token=0;
+        if(Gdiplus::GdiplusStartup(&token,&input,nullptr)==Gdiplus::Ok){
+          {
+            Gdiplus::Bitmap bitmap(image,nullptr);
+            CLSID encoder{0x557cf400,0x1a04,0x11d3,{0x9a,0x73,0,0,0xf8,0x1e,0xf3,0x2e}};
+            auto temp=path;temp+=L".tmp";
+            if(bitmap.Save(temp.c_str(),&encoder,nullptr)==Gdiplus::Ok)
+              MoveFileEx(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING);
+          }
+          Gdiplus::GdiplusShutdown(token);
+        }
+        DeleteObject(image);
+      }
+      if(!fs::exists(path)){
+        check(MFStartup(MF_VERSION));
+        struct MediaLifetime { ~MediaLifetime(){MFShutdown();} } mediaLifetime;
+        ComPtr<IMFAttributes> attributes;
+        ComPtr<IMFSourceReader> reader;
+        ComPtr<IMFMediaType> type,actual;
+        check(MFCreateAttributes(&attributes,1));
+        check(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,TRUE));
+        check(MFCreateSourceReaderFromURL(video.c_str(),attributes.Get(),&reader));
+        check(reader->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS,FALSE));
+        check(reader->SetStreamSelection((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM,TRUE));
+        check(MFCreateMediaType(&type));
+        check(type->SetGUID(MF_MT_MAJOR_TYPE,MFMediaType_Video));
+        check(type->SetGUID(MF_MT_SUBTYPE,MFVideoFormat_RGB32));
+        check(reader->SetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM,nullptr,type.Get()));
+        check(reader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM,&actual));
+        UINT frameWidth=0,frameHeight=0;
+        check(MFGetAttributeSize(actual.Get(),MF_MT_FRAME_SIZE,&frameWidth,&frameHeight));
+        ComPtr<IMFSample> sample;
+        for(int attempt=0;attempt<100 && !sample;attempt++){
+          DWORD flags=0;
+          check(reader->ReadSample((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM,0,nullptr,&flags,nullptr,&sample));
+          if(flags&MF_SOURCE_READERF_ENDOFSTREAM)break;
+        }
+        if(sample){
+          ComPtr<IMFMediaBuffer> buffer;check(sample->ConvertToContiguousBuffer(&buffer));
+          BYTE *pixels=nullptr;DWORD length=0;
+          check(buffer->Lock(&pixels,nullptr,&length));
+          LONG stride=(LONG)MFGetAttributeUINT32(actual.Get(),MF_MT_DEFAULT_STRIDE,frameWidth*4);
+          if(frameWidth && frameHeight && (unsigned long long)abs(stride)*frameHeight<=length){
+            BITMAPFILEHEADER header{};BITMAPINFOHEADER info{};
+            info.biSize=sizeof info;info.biWidth=frameWidth;info.biHeight=stride<0?(LONG)frameHeight:-(LONG)frameHeight;
+            info.biPlanes=1;info.biBitCount=32;
+            header.bfType=0x4d42;header.bfOffBits=sizeof header+sizeof info;
+            header.bfSize=header.bfOffBits+frameWidth*frameHeight*4;
+            auto temp=path;temp+=L".tmp";
+            std::ofstream out(temp,std::ios::binary);
+            out.write((char*)&header,sizeof header);out.write((char*)&info,sizeof info);
+            for(UINT row=0;row<frameHeight;row++)out.write((char*)pixels+row*abs(stride),frameWidth*4);
+            out.close();
+            if(out)MoveFileEx(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING);
+          }
+          buffer->Unlock();
+        }
+      }
+    }catch(HRESULT error){
+      std::ofstream log(path.wstring()+L".error");
+      log<<std::hex<<(unsigned)error;
+    }catch(...){}
+    CoUninitialize();
+    PostMessage(window,PreviewReady,request,0);
+  }).detach();
+}
+// Shared look for radio rows (Settings) and radio chips (Import): anti-aliased indicator, label, optional description.
+void drawChoice(HDC dc,RECT r,const std::wstring &label,const wchar_t *description,bool checked,bool checkbox,
+                bool enabled,bool hot,bool focus,COLORREF background){
+  fillRect(dc,r,background);
+  if(hot && enabled)fillRound(dc,r,cHover,8);
+  int top=description?r.top+10:(r.top+r.bottom-18)/2;
+  RECT box{r.left+10,top,r.left+28,top+18};
+  auto ring=!enabled?cDisabled:checked?cAccent:RGB(142,139,157);
+  if(checkbox){
+    if(checked)fillRound(dc,box,cAccent,4);else strokeRound(dc,box,ring,4,1.5f);
+    if(checked)paintIcon(dc,L"",box,12,cInk);
+  }else{
+    strokeRound(dc,box,ring,9,1.5f);
+    if(checked){RECT dot=box;InflateRect(&dot,-5,-5);fillRound(dc,dot,enabled?cAccent:cDisabled,4);}
+  }
+  auto ink=enabled?cText:cDisabled;
+  if(description){
+    paintText(dc,label,{r.left+40,r.top+8,r.right-12,r.top+30},14,ink,FW_SEMIBOLD);
+    paintText(dc,description,{r.left+40,r.top+31,r.right-12,r.bottom-2},13,enabled?cMuted:cDisabled,FW_NORMAL,DT_LEFT|DT_WORDBREAK);
+  }else paintText(dc,label,{r.left+36,r.top,r.right-6,r.bottom},13,ink,FW_NORMAL,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+  if(focus)focusRing(dc,r,8);
+}
+bool keyboardCues(HWND control){return !(SendMessage(control,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS);}
+bool hovered(HWND control){POINT p;GetCursorPos(&p);return WindowFromPoint(p)==control;}
+struct ButtonStyle{bool primary;COLORREF background;const wchar_t *icon=nullptr;bool left=false;COLORREF tint=CLR_INVALID;bool outline=false;};
+void drawButton(HDC dc,const DRAWITEMSTRUCT &d,RECT r,const ButtonStyle &style){
+  bool down=(d.itemState&ODS_SELECTED)!=0,disabled=(d.itemState&ODS_DISABLED)!=0,hot=!disabled && hovered(d.hwndItem);
+  fillRect(dc,r,style.background);
+  if(style.primary)fillRound(dc,r,disabled?RGB(74,68,92):down?cAccentDown:hot?cAccentHot:cAccent,7);
+  else if(down || hot)fillRound(dc,r,down?RGB(62,54,78):cHover,7);
+  if(style.outline && !disabled)strokeRound(dc,r,cLine,7,1);
+  wchar_t text[128];GetWindowText(d.hwndItem,text,128);
+  auto ink=disabled?cDisabled:style.primary?cInk:style.tint!=CLR_INVALID?style.tint:cSoft;
+  RECT label=r;
+  UINT align=DT_CENTER;
+  if(style.icon){
+    int start=r.left+12;
+    if(!style.left){
+      HDC measure=CreateCompatibleDC(dc);
+      int textWidth=paintText(measure,text,{0,0,0,0},14,ink,FW_NORMAL,DT_CALCRECT|DT_SINGLELINE);
+      DeleteDC(measure);start=(r.left+r.right-textWidth-24)/2;
+    }
+    paintIcon(dc,style.icon,{start,r.top,start+16,r.bottom},14,ink);
+    label.left=start+24;align=DT_LEFT;
+  }
+  paintText(dc,text,label,14,ink,style.primary?FW_SEMIBOLD:FW_NORMAL,align|DT_VCENTER|DT_SINGLELINE);
+  if((d.itemState&ODS_FOCUS) && !(d.itemState&ODS_NOFOCUSRECT) && keyboardCues(d.hwndItem))focusRing(dc,r,7);
+}
+LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR);
+HBRUSH fieldBrush(){static HBRUSH brush=CreateSolidBrush(cRaised);return brush;}
+HBRUSH windowBrush(){static HBRUSH brush=CreateSolidBrush(cWindow);return brush;}
+void placeDip(HWND dialog,int id,int x,int y,int span,int tall){
+  SetWindowPos(GetDlgItem(dialog,id),nullptr,px(x),px(y),px(span),px(tall),SWP_NOZORDER|SWP_NOACTIVATE);
+}
+void sizeDialog(HWND dialog,int clientWidth,int clientHeight){
+  RECT frame{0,0,px(clientWidth),px(clientHeight)};
+  AdjustWindowRectExForDpi(&frame,GetWindowLong(dialog,GWL_STYLE),FALSE,GetWindowLong(dialog,GWL_EXSTYLE),libraryDpi);
+  RECT owner;GetWindowRect(GetParent(dialog),&owner);
+  int w=frame.right-frame.left,h=frame.bottom-frame.top;
+  SetWindowPos(dialog,nullptr,(owner.left+owner.right-w)/2,(owner.top+owner.bottom-h)/2,w,h,SWP_NOZORDER|SWP_NOACTIVATE);
+}
+void themeWindow(HWND window){
+  BOOL dark=TRUE;DwmSetWindowAttribute(window,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof dark);
+  COLORREF caption=cWindow;DwmSetWindowAttribute(window,35,&caption,sizeof caption);
+}
+using DialogPainter=void(*)(HWND,HDC);
+// Common dialog behavior; painter draws the dialog's own text in 96-dpi units.
+INT_PTR dialogTheme(HWND dialog,UINT message,WPARAM a,LPARAM b,DialogPainter painter=nullptr){
+  DpiScope scale(GetDpiForWindow(dialog));
+  if(message==WM_INITDIALOG){
+    themeWindow(dialog);
+    for(HWND child=GetWindow(dialog,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT))SetWindowSubclass(child,uiButtonProc,1,0);
+  }
+  if(message==WM_CTLCOLORDLG || message==WM_CTLCOLORSTATIC || message==WM_CTLCOLORBTN){
+    SetTextColor((HDC)a,cText);SetBkColor((HDC)a,cWindow);return (INT_PTR)windowBrush();
+  }
+  if(message==WM_CTLCOLOREDIT){SetTextColor((HDC)a,cText);SetBkColor((HDC)a,cRaised);return (INT_PTR)fieldBrush();}
+  if(message==WM_ERASEBKGND)return TRUE;
+  if(message==WM_PAINT){
+    PAINTSTRUCT ps;HDC screen=BeginPaint(dialog,&ps);
+    RECT client;GetClientRect(dialog,&client);
+    HDC dc=CreateCompatibleDC(screen);HBITMAP bitmap=CreateCompatibleBitmap(screen,client.right,client.bottom);
+    auto old=SelectObject(dc,bitmap);
+    FillRect(dc,&client,windowBrush());
+    for(HWND child=GetWindow(dialog,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)){
+      wchar_t cls[16];GetClassName(child,cls,16);
+      if(_wcsicmp(cls,L"Edit"))continue;
+      RECT field;GetWindowRect(child,&field);MapWindowPoints(nullptr,dialog,(POINT*)&field,2);
+      field=units(field);InflateRect(&field,10,8);
+      fillRound(dc,field,cRaised,7);
+      strokeRound(dc,field,GetFocus()==child?cAccent:cLine,7,1);
+    }
+    if(painter)painter(dialog,dc);
+    BitBlt(screen,0,0,client.right,client.bottom,dc,0,0,SRCCOPY);
+    SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
+    EndPaint(dialog,&ps);return TRUE;
+  }
+  if(message==WM_COMMAND && (HIWORD(a)==EN_SETFOCUS || HIWORD(a)==EN_KILLFOCUS))InvalidateRect(dialog,nullptr,FALSE);
+  if(message==WM_DRAWITEM){
+    auto &d=*(DRAWITEMSTRUCT*)b;
+    if(d.CtlType!=ODT_BUTTON)return FALSE;
+    HDC target=d.hDC;RECT bounds=d.rcItem;
+    HDC dc=CreateCompatibleDC(target);HBITMAP bitmap=CreateCompatibleBitmap(target,bounds.right,bounds.bottom);
+    auto old=SelectObject(dc,bitmap);
+    drawButton(dc,d,units(bounds),{d.CtlID==IDOK,cWindow,nullptr,false,CLR_INVALID,d.CtlID!=IDOK});
+    BitBlt(target,0,0,bounds.right,bounds.bottom,dc,0,0,SRCCOPY);
+    SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
+    return TRUE;
+  }
+  return FALSE;
+}
+const wchar_t *removeName=L"";
+void paintRemove(HWND,HDC dc){
+  paintText(dc,L"Remove “"+std::wstring(removeName)+L"” from your library?",{24,22,376,46},16,cText,FW_SEMIBOLD);
+  paintText(dc,L"The video file stays where it is. You can add it again any time.",{24,52,376,96},13,cMuted,FW_NORMAL,DT_LEFT|DT_WORDBREAK);
+}
+INT_PTR CALLBACK removeProc(HWND w,UINT m,WPARAM a,LPARAM b){
+  if(m==WM_INITDIALOG){
+    removeName=reinterpret_cast<const wchar_t*>(b);
+    DpiScope scale(GetDpiForWindow(w));
+    sizeDialog(w,400,164);placeDip(w,IDCANCEL,280,108,96,36);placeDip(w,IDOK,176,108,96,36);
+  }
+  if(auto result=dialogTheme(w,m,a,b,paintRemove))return result;
+  if(m==WM_INITDIALOG){SetFocus(GetDlgItem(w,IDCANCEL));return FALSE;}
+  if(m==WM_COMMAND && (LOWORD(a)==IDOK || LOWORD(a)==IDCANCEL)){EndDialog(w,LOWORD(a));return TRUE;}
+  return FALSE;
+}
+struct ImportJob {
+  fs::path original, result, progress;
+  HANDLE process=nullptr, group=nullptr;
+  DWORD width=0,height=0,rate=0;
+  ULONGLONG duration=0,bytes=0;
+  int percent=-1,tick=0;
+};
+ImportJob *activeImport=nullptr;
+// GPU and RAM per decoded megapixel, measured with Test-Playback.ps1 from 720p to 2160p.
+double videoMemory(double megapixels){return 9+19.5*megapixels;}
+double processMemory(double megapixels){return 103+17.5*megapixels;}
+double importScale(const ImportJob &job,int limit){
+  if(!limit || !job.width || !job.height)return 1;
+  return std::min({1.,limit/(double)job.height,limit*16/9./job.width});
+}
+int chosenLimit(HWND w){return IsDlgButtonChecked(w,302)?1080:IsDlgButtonChecked(w,303)?720:0;}
+bool convertChoice(HWND w){return chosenLimit(w) || IsDlgButtonChecked(w,306);}
+void paintImport(HWND w,HDC dc){
+  auto &job=*activeImport;
+  paintText(dc,job.original.filename().wstring(),{24,20,436,42},16,cText,FW_SEMIBOLD);
+  std::wstring facts;
+  auto add=[&](const std::wstring &fact){facts+=(facts.empty()?L"":L"  ·  ")+fact;};
+  wchar_t text[160];
+  if(job.width && job.height){swprintf_s(text,L"%lu × %lu",job.width,job.height);add(text);}
+  if(job.rate){swprintf_s(text,job.rate%1000?L"%.2f fps":L"%.0f fps",job.rate/1000.);add(text);}
+  if(job.duration){auto s=job.duration/10000000;swprintf_s(text,L"%llu:%02llu",s/60,s%60);add(text);}
+  if(job.bytes){bool gb=job.bytes>=1000000000,mb=job.bytes>=1000000;swprintf_s(text,gb?L"%.1f GB":mb?L"%.0f MB":L"%.0f KB",job.bytes/(gb?1e9:mb?1e6:1e3));add(text);}
+  paintText(dc,facts,{24,46,436,66},12,cMuted);
+  paintText(dc,L"Resolution",{24,86,436,106},13,cSoft,FW_SEMIBOLD);
+  paintText(dc,L"Frame rate",{24,156,436,176},13,cSoft,FW_SEMIBOLD);
+  RECT box{24,226,436,382};
+  fillRound(dc,box,cRaised,10);
+  paintText(dc,L"Estimated while playing",{40,240,420,258},12,cMuted);
+  if(!job.width || !job.height || !job.rate){
+    paintText(dc,L"Windows couldn't read this video's size or frame rate, so Litely can't estimate savings.",{40,266,420,330},13,cSoft,FW_NORMAL,DT_LEFT|DT_WORDBREAK);
+  }else{
+    double scale=importScale(job,chosenLimit(w)),before=job.width*(double)job.height/1e6,after=before*scale*scale;
+    double fps=job.rate/1000.,next=IsDlgButtonChecked(w,306)?std::min(30.,fps):fps;
+    struct Row{const wchar_t *label;double from,to;const wchar_t *unit;};
+    Row rows[]={{L"Video memory",videoMemory(before),videoMemory(after),L" MiB"},
+                {L"RAM",processMemory(before),processMemory(after),L" MiB"},
+                {L"Frames per second",fps,next,L""}};
+    for(int k=0;k<3;k++){
+      auto &row=rows[k];int y=266+k*38;
+      paintText(dc,row.label,{40,y,240,y+18},13,cSoft);
+      bool approx=*row.unit!=0;
+      swprintf_s(text,approx?L"≈%.0f%s  →  ≈%.0f%s":L"%.0f%s  →  %.0f%s",row.from,row.unit,row.to,row.unit);
+      if(row.to==row.from)swprintf_s(text,approx?L"≈%.0f%s":L"%.0f%s",row.from,row.unit);
+      paintText(dc,text,{200,y,360,y+18},13,cText,FW_NORMAL,DT_RIGHT|DT_SINGLELINE);
+      double ratio=row.from>0?row.to/row.from:1;
+      if(ratio<.995)swprintf_s(text,L"−%.0f%%",(1-ratio)*100);else wcscpy_s(text,L"Same");
+      paintText(dc,text,{364,y,420,y+18},13,ratio<.995?cAccent:cMuted,FW_SEMIBOLD,DT_RIGHT|DT_SINGLELINE);
+      RECT track{40,y+23,420,y+28};
+      fillRound(dc,track,cLine,2.5f);
+      RECT fill=track;fill.right=fill.left+std::max(5,(int)((track.right-track.left)*ratio));
+      fillRound(dc,fill,ratio<.995?cAccent:RGB(142,139,157),2.5f);
+    }
+  }
+  RECT note{24,388,436,406};
+  if(job.process){
+    if(job.percent>=0)swprintf_s(text,L"Converting…  %d%%",job.percent);else wcscpy_s(text,L"Converting…");
+    paintText(dc,text,note,12,cSoft);
+    RECT track{24,412,436,417};
+    fillRound(dc,track,cLine,2.5f);
+    RECT fill=track;
+    if(job.percent>=0)fill.right=fill.left+std::max(5,(int)(track.right-track.left)*job.percent/100);
+    else{int span=(track.right-track.left)/4,offset=(job.tick*12)%(track.right-track.left+span)-span;
+         fill.left=std::max(track.left,track.left+offset);fill.right=std::min(track.right,track.left+offset+span);}
+    if(fill.right>fill.left)fillRound(dc,fill,cAccent,2.5f);
+  }else paintText(dc,convertChoice(w)?L"Creates an H.264 playback copy in Litely's folder. Your original file is kept.":
+                                     L"Plays your file directly. Nothing is copied.",note,12,cMuted);
+}
+void stopConversion(ImportJob &job,bool cancelled){
+  if(job.group){
+    if(cancelled){
+      TerminateJobObject(job.group,1);
+      for(int i=0;i<60;i++){
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info{};
+        if(!QueryInformationJobObject(job.group,JobObjectBasicAccountingInformation,&info,sizeof info,nullptr) || !info.ActiveProcesses)break;
+        Sleep(50);
+      }
+    }
+    CloseHandle(job.group);job.group=nullptr;
+  }
+  if(job.process){CloseHandle(job.process);job.process=nullptr;}
+  std::error_code ignored;
+  fs::remove(job.progress,ignored);
+  if(cancelled){
+    auto dir=job.result.parent_path();
+    std::vector<fs::path> scratch;
+    for(auto &entry:fs::directory_iterator(dir,ignored))
+      if(entry.is_directory(ignored))scratch.push_back(entry.path());
+    for(auto &path:scratch)fs::remove_all(path,ignored);
+    fs::remove(dir,ignored);fs::remove(dir.parent_path(),ignored);
+  }
+}
+void readProgress(ImportJob &job){
+  std::ifstream in(job.progress,std::ios::binary);
+  if(!in || !job.duration)return;
+  in.seekg(0,std::ios::end);auto size=(long long)in.tellg();
+  in.seekg(std::max(0LL,size-2048));
+  std::string tail((std::istreambuf_iterator<char>(in)),{});
+  auto at=tail.rfind("out_time_us=");
+  if(at==std::string::npos)return;
+  long long micro=_atoi64(tail.c_str()+at+12);
+  if(micro>0)job.percent=(int)std::min(99LL,micro*1000/(long long)job.duration);
+}
+INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
+  auto job=reinterpret_cast<ImportJob*>(GetWindowLongPtr(w,DWLP_USER));
+  if(msg==WM_INITDIALOG){
+    SetWindowLongPtr(w,DWLP_USER,b);
+    job=activeImport=reinterpret_cast<ImportJob*>(b);
+    readVideoDetails(job->original,&job->width,&job->height,&job->rate,&job->duration);
+    std::error_code ignored;job->bytes=fs::file_size(job->original,ignored);
+    DpiScope scale(GetDpiForWindow(w));
+    sizeDialog(w,460,480);
+    placeDip(w,301,14,110,150,32);placeDip(w,302,168,110,110,32);placeDip(w,303,282,110,110,32);
+    placeDip(w,305,14,180,150,32);placeDip(w,306,168,180,110,32);
+    placeDip(w,IDCANCEL,340,428,96,36);placeDip(w,IDOK,236,428,96,36);
+    std::wstring original=L"Original";
+    if(job->height)original+=L" ("+std::to_wstring(job->height)+L"p)";
+    SetDlgItemText(w,301,original.c_str());
+    wchar_t rate[48]=L"Original";
+    if(job->rate)swprintf_s(rate,job->rate%1000?L"Original (%.2f fps)":L"Original (%.0f fps)",job->rate/1000.);
+    SetDlgItemText(w,305,rate);
+    bool known=job->width && job->height;
+    EnableWindow(GetDlgItem(w,302),!known || importScale(*job,1080)<1);
+    EnableWindow(GetDlgItem(w,303),!known || importScale(*job,720)<1);
+    EnableWindow(GetDlgItem(w,306),!job->rate || job->rate>30500);
+    CheckRadioButton(w,301,303,301);CheckRadioButton(w,305,306,305);
+  }
+  if(auto result=dialogTheme(w,msg,a,b,paintImport))return result;
+  if(!job)return FALSE;
+  if(msg==WM_INITDIALOG){SetFocus(GetDlgItem(w,301));return FALSE;}
+  if(msg==WM_DESTROY && job->process){KillTimer(w,1);stopConversion(*job,true);return FALSE;}
+  if(msg==WM_NOTIFY){
+    auto header=reinterpret_cast<NMHDR*>(b);
+    if(header->code==NM_CUSTOMDRAW && header->idFrom>=301 && header->idFrom<=306){
+      auto &draw=*reinterpret_cast<NMCUSTOMDRAW*>(b);
+      if(draw.dwDrawStage!=CDDS_PREPAINT){SetWindowLongPtr(w,DWLP_MSGRESULT,CDRF_DODEFAULT);return TRUE;}
+      DpiScope scale(GetDpiForWindow(w));
+      RECT bounds;GetClientRect(header->hwndFrom,&bounds);
+      HDC dc=CreateCompatibleDC(draw.hdc);HBITMAP bitmap=CreateCompatibleBitmap(draw.hdc,bounds.right,bounds.bottom);
+      auto old=SelectObject(dc,bitmap);
+      wchar_t label[64];GetWindowText(header->hwndFrom,label,64);
+      drawChoice(dc,units(bounds),label,nullptr,IsDlgButtonChecked(w,(int)header->idFrom)==BST_CHECKED,false,
+                 IsWindowEnabled(header->hwndFrom)!=0,hovered(header->hwndFrom),
+                 (draw.uItemState&CDIS_FOCUS) && keyboardCues(header->hwndFrom),cWindow);
+      BitBlt(draw.hdc,0,0,bounds.right,bounds.bottom,dc,0,0,SRCCOPY);
+      SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
+      SetWindowLongPtr(w,DWLP_MSGRESULT,CDRF_SKIPDEFAULT);return TRUE;
+    }
+  }
+  if(msg==WM_COMMAND && LOWORD(a)>=301 && LOWORD(a)<=306){
+    for(int id=301;id<=306;id++)InvalidateRect(GetDlgItem(w,id),nullptr,FALSE);
+    InvalidateRect(w,nullptr,FALSE);return TRUE;
+  }
+  if(msg==WM_TIMER && job->process){
+    job->tick++;
+    if(WaitForSingleObject(job->process,0)==WAIT_OBJECT_0){
+      DWORD code=1;GetExitCodeProcess(job->process,&code);
+      KillTimer(w,1);stopConversion(*job,false);
+      std::error_code ignored;
+      if(code || !fs::exists(job->result,ignored)){
+        stopConversion(*job,true);
+        MessageBox(w,L"Conversion failed. Making a playback copy needs Python with FFmpeg on PATH or the imageio-ffmpeg package.",L"Litely",MB_ICONERROR);
+        EndDialog(w,0);
+      }else EndDialog(w,1);
+      return TRUE;
+    }
+    readProgress(*job);
+    DpiScope scale(GetDpiForWindow(w));
+    RECT bar{px(24),px(384),px(436),px(420)};InvalidateRect(w,&bar,FALSE);
+    return TRUE;
+  }
+  if(msg==WM_CLOSE || (msg==WM_COMMAND && LOWORD(a)==IDCANCEL)){
+    if(job->process){KillTimer(w,1);stopConversion(*job,true);}
+    EndDialog(w,0);return TRUE;
+  }
+  if(msg!=WM_COMMAND || LOWORD(a)!=IDOK || job->process)return FALSE;
+  bool cap=IsDlgButtonChecked(w,306)!=0;
+  int limit=chosenLimit(w);
+  if(!convertChoice(w)){job->result=job->original;EndDialog(w,1);return TRUE;}
+  std::wstring size=std::to_wstring(limit),suffix=limit?size+L"p":L"original";
+  if(cap)suffix+=L"-30fps";
+  wchar_t exe[32768];GetModuleFileName(nullptr,exe,32768);
+  auto script=fs::path(exe).parent_path().parent_path()/L"optimize.py";
+  auto dir=folder/L"optimized"/posterPath(job->original).stem()/std::to_wstring(fs::last_write_time(job->original).time_since_epoch().count());
+  job->result=dir/(job->original.stem().wstring()+L"-"+suffix+L".mp4");
+  if(fs::exists(job->result)){EndDialog(w,1);return TRUE;}
+  job->progress=dir/(suffix+L".progress");
+  auto quote=[](const fs::path &v){return L"\""+v.wstring()+L"\"";};
+  auto command=L"python "+quote(script)+L" --height "+size+(cap?L" --cap-fps":L"")+L" --progress "+quote(job->progress)+
+               L" --output "+quote(dir)+L" "+quote(job->original);
+  job->group=CreateJobObject(nullptr,nullptr);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  STARTUPINFO startup{sizeof startup};PROCESS_INFORMATION process{};
+  if(!job->group || !SetInformationJobObject(job->group,JobObjectExtendedLimitInformation,&limits,sizeof limits) ||
+     !CreateProcess(nullptr,command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_SUSPENDED,nullptr,nullptr,&startup,&process)){
+    stopConversion(*job,false);
+    MessageBox(w,L"Could not start Python to make the playback copy.",L"Litely",MB_ICONERROR);return TRUE;
+  }
+  job->process=process.hProcess;
+  if(!AssignProcessToJobObject(job->group,process.hProcess)){
+    TerminateProcess(process.hProcess,1);CloseHandle(process.hThread);stopConversion(*job,false);
+    MessageBox(w,L"Could not start the conversion.",L"Litely",MB_ICONERROR);return TRUE;
+  }
+  ResumeThread(process.hThread);CloseHandle(process.hThread);
+  for(int id:{301,302,303,305,306,IDOK})EnableWindow(GetDlgItem(w,id),FALSE);
+  SetFocus(GetDlgItem(w,IDCANCEL));
+  SetTimer(w,1,100,nullptr);InvalidateRect(w,nullptr,FALSE);
+  return TRUE;
+}
+INT_PTR CALLBACK renameProc(HWND dialog,UINT message,WPARAM a,LPARAM b){
+  if(message==WM_INITDIALOG){
+    DpiScope scale(GetDpiForWindow(dialog));
+    sizeDialog(dialog,400,176);
+    placeDip(dialog,201,34,58,332,22);placeDip(dialog,IDCANCEL,280,116,96,36);placeDip(dialog,IDOK,176,116,96,36);
+    SendDlgItemMessage(dialog,201,WM_SETFONT,(WPARAM)CreateFont(-px(14),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,textFace()),FALSE);
+  }
+  if(auto themed=dialogTheme(dialog,message,a,b,[](HWND,HDC dc){paintText(dc,L"Name shown in your library",{24,18,376,38},13,cSoft,FW_SEMIBOLD);}))return themed;
+  if(message==WM_INITDIALOG){
+    auto name=reinterpret_cast<const wchar_t*>(b);
+    SetDlgItemText(dialog,201,name);
+    SendDlgItemMessage(dialog,201,EM_SETLIMITTEXT,200,0);
+    SendDlgItemMessage(dialog,201,EM_SETSEL,0,-1);
+    SetFocus(GetDlgItem(dialog,201));
+    return FALSE;
+  }
+  if(message==WM_DESTROY){DeleteObject((HFONT)SendDlgItemMessage(dialog,201,WM_GETFONT,0,0));return FALSE;}
+  if(message==WM_COMMAND){
+    if(LOWORD(a)==IDCANCEL){EndDialog(dialog,0);return TRUE;}
+    if(LOWORD(a)==IDOK){
+      wchar_t name[201];GetDlgItemText(dialog,201,name,201);
+      std::wstring value=name;
+      auto first=value.find_first_not_of(L" \t\r\n");
+      if(first==std::wstring::npos)return TRUE;
+      value=value.substr(first,value.find_last_not_of(L" \t\r\n")-first+1);
+      int i=selectedIndex();
+      if(i<0)return TRUE;
+      auto key=posterPath(libraryFiles[i]).stem().wstring();
+      if(!WritePrivateProfileString(L"names",key.c_str(),value.c_str(),(folder/L"library-names.ini").c_str())){
+        MessageBox(dialog,L"Could not save the name.",L"Litely",MB_ICONERROR);return TRUE;
+      }
+      EndDialog(dialog,1);return TRUE;
+    }
+  }
+  return FALSE;
+}
+void updateActionLabel();
+
+void loadPreview() {
+  previewImage.reset();
+  int i = selectedIndex();
+  if (i >= 0 && i < (int)libraryFiles.size()) {
+    auto image = artworkPath(libraryFiles[i]);
+    requestPreview(libraryFiles[i]);
+    if (fs::exists(image)) {
+      auto bitmap = readArtwork(image);
+      if (bitmap)
+        previewImage = std::move(bitmap);
+    }
+  }
+  BOOL motion = TRUE;
+  SystemParametersInfo(SPI_GETCLIENTAREAANIMATION, 0, &motion, 0);
+  motion=motion && !settingsPage && previewImage!=nullptr;
+  previewOpacity = motion ? .35f : 1.f;
+  if (motion)
+    SetTimer(libraryWindow, 2, 16, nullptr);
+  updateActionLabel();
+  InvalidateRect(libraryWindow, nullptr, FALSE);
+}
+void fillList(const fs::path &preferred = source) {
+  SendMessage(libraryList,WM_SETREDRAW,FALSE,0);
+  SendMessage(libraryList, LB_RESETCONTENT, 0, 0);
+  rowImages.clear();
+  videoDetails.clear();
+  int selected = 0;
+  for (size_t i = 0; i < libraryFiles.size(); i++) {
+    videoDetails.push_back(readVideoDetails(libraryFiles[i]));
+    auto image=readArtwork(artworkPath(libraryFiles[i]),true);
+    rowImages.push_back(std::move(image));
+    SendMessage(libraryList, LB_ADDSTRING, 0,
+                (LPARAM)displayName(libraryFiles[i]).c_str());
+    if (!_wcsicmp(libraryFiles[i].c_str(), preferred.c_str()))
+      selected = (int)i;
+  }
+  SendMessage(libraryList, LB_SETCURSEL, selected, 0);
+  SendMessage(libraryList,WM_SETREDRAW,TRUE,0);
+  RedrawWindow(libraryList,nullptr,nullptr,RDW_INVALIDATE|RDW_FRAME);
+  loadPreview();
+}
+std::wstring savingsText;
+void sampleStats() {
+  static fs::path measuredSource;
+  static unsigned previousFrames=0, samples=0;
+  static double playingCPU=0,playingRAM=0;
+  static bool previousPlaying=false;
+
+  ULONGLONG now = GetTickCount64();
+  double cpu = cpuSeconds();
+  PROCESS_MEMORY_COUNTERS_EX mem{};
+  mem.cb = sizeof mem;
+  GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&mem,
+                       sizeof mem);
+  SYSTEM_INFO sys;
+  GetSystemInfo(&sys);
+  wchar_t gpu[64] = L"0 MiB";
+  if (device) {
+    ComPtr<IDXGIDevice> dx;
+    ComPtr<IDXGIAdapter> adapter;
+    ComPtr<IDXGIAdapter3> adapter3;
+    if (SUCCEEDED(device.As(&dx)) && SUCCEEDED(dx->GetAdapter(&adapter)) &&
+        SUCCEEDED(adapter.As(&adapter3))) {
+      DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+      if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(
+              0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+        swprintf_s(gpu, L"%.1f MiB", info.CurrentUsage / 1048576.);
+      else
+        wcscpy_s(gpu, L"Unavailable");
+    }
+  }
+  double percent = lastSample && now > lastSample
+                       ? 100000. * (cpu - lastCPU) / (now - lastSample) /
+                             sys.dwNumberOfProcessors
+                       : 0;
+  wchar_t value[200];swprintf_s(value,L"%.1f%%",percent);cpuValue=lastSample?value:L"—";
+  swprintf_s(value,L"%.1f MiB",mem.WorkingSetSize/1048576.);ramValue=value;gpuValue=gpu;
+  if(measuredSource!=source){measuredSource=source;samples=0;previousPlaying=false;}
+  bool playing=ready && !paused && !covered && !batteryOverride && !parked;
+  double ram=mem.WorkingSetSize/1048576.;
+  if(lastSample && now-lastSample<2500 && playing && previousPlaying && frames!=previousFrames){
+    ++samples;
+    playingCPU+=(percent-playingCPU)/std::min(samples,10u);
+    playingRAM+=(ram-playingRAM)/std::min(samples,10u);
+  }
+  if(source.empty())savingsText.clear();
+  else if(playing)savingsText=samples?L"Playing now. Pause it or cover the desktop to compare.":L"Measuring playback…";
+  else if(!samples)savingsText=L"Play this wallpaper on a visible desktop to measure a baseline.";
+  else if(!previousPlaying && lastSample){
+    double ramSaved=playingRAM-ram,cpuSaved=playingCPU-percent;
+    swprintf_s(value,L"%s: %.0f MiB %s RAM and %.1f%% %s CPU than while playing",
+               batteryOverride?L"Energy Saver":paused?L"Paused":L"Desktop covered",
+               std::fabs(ramSaved),ramSaved>=0?L"less":L"more",std::fabs(cpuSaved),cpuSaved>=0?L"less":L"more");
+    savingsText=value;
+  }
+  previousPlaying=playing;previousFrames=frames;
+  lastCPU = cpu;
+  lastSample = now;
+}
+const wchar_t *actionCaption(){
+  int i=selectedIndex();
+  bool active=i>=0 && !_wcsicmp(libraryFiles[i].c_str(),source.c_str());
+  return active?(paused||batteryOverride?L"Resume":L"Pause"):L"Set wallpaper";
+}
+void updateActionLabel(){
+  int i=selectedIndex();
+  HWND button=GetDlgItem(libraryWindow,102);
+  wchar_t current[64]{};GetWindowText(button,current,64);
+  const wchar_t *next=actionCaption();
+  if(wcscmp(current,next)){
+    SetWindowText(button,next);
+    RECT client;GetClientRect(libraryWindow,&client);
+    SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));
+  }
+  bool enabled=!batteryOverride && !applyingPause && i>=0;
+  if(!!IsWindowEnabled(button)!=enabled)EnableWindow(button,enabled);
+  HWND remove=GetDlgItem(libraryWindow,109);
+  if(!!IsWindowEnabled(remove)!=(i>=0))EnableWindow(remove,i>=0);
+}
+void setUiPage(bool settings) {
+  settingsPage = settings;
+  titleHot = false;
+  for (int id : {102,109})
+    ShowWindow(GetDlgItem(libraryWindow, id), settings ? SW_HIDE : SW_SHOW);
+  for (int id : {103, 104, 105, 107})
+    ShowWindow(GetDlgItem(libraryWindow, id), settings ? SW_SHOW : SW_HIDE);
+  SendMessage(GetDlgItem(libraryWindow, 103), BM_SETCHECK,
+              maximumSavings ? BST_UNCHECKED : BST_CHECKED, 0);
+  SendMessage(GetDlgItem(libraryWindow, 104), BM_SETCHECK,
+              maximumSavings ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessage(GetDlgItem(libraryWindow, 105), BM_SETCHECK,
+              batteryRule ? BST_CHECKED : BST_UNCHECKED, 0);
+  for(int id:{103,104,105,106})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
+  InvalidateRect(libraryWindow, nullptr, FALSE);
+}
+// Keep the native button's input, radio grouping and accessibility behavior.
+LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR){
+  int id=GetDlgCtrlID(w);
+  if(m==WM_LBUTTONDOWN)SendMessage(GetParent(w),WM_CHANGEUISTATE,MAKEWPARAM(UIS_SET,UISF_HIDEFOCUS),0);
+  if(id==100 && (m==WM_MOUSEMOVE || m==WM_MOUSELEAVE)){
+    int next=-1;
+    if(m==WM_MOUSEMOVE){
+      auto hit=SendMessage(w,LB_ITEMFROMPOINT,0,b);
+      if(!HIWORD(hit) && LOWORD(hit)<libraryFiles.size())next=LOWORD(hit);
+    }
+    if(next!=hoveredRow){
+      for(int index:{hoveredRow,next}){
+        RECT row;
+        if(index>=0 && SendMessage(w,LB_GETITEMRECT,index,(LPARAM)&row)!=LB_ERR)
+          InvalidateRect(w,&row,FALSE);
+      }
+      hoveredRow=next;
+    }
+  }
+  if(m==WM_MOUSEMOVE){
+    TRACKMOUSEEVENT query{sizeof query,TME_QUERY,w,0};
+    TrackMouseEvent(&query);
+    if(query.hwndTrack!=w || !(query.dwFlags&TME_LEAVE)){
+      TRACKMOUSEEVENT leave{sizeof leave,TME_LEAVE,w,0};
+      TrackMouseEvent(&leave);
+      if(id!=100)InvalidateRect(w,nullptr,FALSE);
+    }
+  }else if(m==WM_MOUSELEAVE && id!=100)InvalidateRect(w,nullptr,FALSE);
+  return DefSubclassProc(w,m,a,b);
+}
+const wchar_t *choiceDescription(int id){
+  return id==103?L"Resumes instantly when the desktop is uncovered. Keeps video memory reserved.":
+         id==104?L"Releases video memory while paused or covered. Resuming takes a moment longer.":
+                 L"On battery with Energy Saver on, shows a still and releases video memory.";
+}
+LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
+  try {
+    switch (message) {
+    case WM_CREATE: {
+      libraryDpi=GetDpiForWindow(w);
+      uiBrush = CreateSolidBrush(cWindow);
+      uiFont =
+          CreateFont(-16, 0, 0, 0, 400, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0,
+                     0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+      auto control = [&](const wchar_t *cls, const wchar_t *text, DWORD style,
+                         int id) {
+        HWND c =
+            CreateWindowEx(0,cls, text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | style,
+                         0, 0, 0, 0, w, (HMENU)(INT_PTR)id, instance, nullptr);
+        SetWindowSubclass(c,uiButtonProc,1,0);
+        SendMessage(c, WM_SETFONT, (WPARAM)uiFont, TRUE);
+        return c;
+      };
+      libraryList = control(
+          L"LISTBOX", L"", LBS_NOTIFY | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS, 100);
+      SetWindowTheme(libraryList,L"DarkMode_Explorer",nullptr);
+      control(L"BUTTON", L"Add MP4", BS_OWNERDRAW, 101);
+      control(L"BUTTON", L"Set wallpaper", BS_OWNERDRAW, 102);
+      control(L"BUTTON", L"Smooth resume", BS_AUTORADIOBUTTON | WS_GROUP, 103);
+      control(L"BUTTON", L"Maximum savings", BS_AUTORADIOBUTTON, 104);
+      control(L"BUTTON", L"Pause when Energy Saver is on",
+              BS_AUTOCHECKBOX | WS_GROUP, 105);
+      control(L"BUTTON", L"Remove", BS_OWNERDRAW, 109);
+      control(L"BUTTON", L"Settings", BS_OWNERDRAW, 106);
+      control(L"BUTTON", L"Tray menu", BS_OWNERDRAW, 108);
+      control(L"BUTTON", L"Library", BS_OWNERDRAW, 107);
+      SendMessage(libraryList,LB_SETITEMHEIGHT,0,px(72));
+      SetTimer(w, 1, 1000, nullptr);
+      return 0;
+    }
+    case WM_SIZE: {
+      if(a==SIZE_MINIMIZED)return 0;
+      int cw=dip(LOWORD(b)),ch=dip(HIWORD(b));
+      // One batched move without copying old pixels, so neighbours can't carry each other's stale bits.
+      HDWP batch=BeginDeferWindowPos(10);
+      auto move=[&](HWND child,int x,int y,int span,int tall){
+        if(batch)batch=DeferWindowPos(batch,child,nullptr,px(x),px(y),px(span),px(std::max(0,tall)),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS);
+      };
+      int hero=heroBottom(cw,ch);
+      move(libraryList,12,122,212,ch-226);
+      move(GetDlgItem(w,101),124,80,100,30);
+      move(GetDlgItem(w,106),12,ch-92,212,36);
+      move(GetDlgItem(w,108),12,ch-50,212,36);
+      const wchar_t *caption=actionCaption();
+      int actionWidth=!wcscmp(caption,L"Set wallpaper")?128:!wcscmp(caption,L"Resume")?96:88;
+      move(GetDlgItem(w,102),cw-28-actionWidth,hero+16,actionWidth,36);
+      move(GetDlgItem(w,109),cw-28-actionWidth-108,hero+16,100,36);
+      move(GetDlgItem(w,107),254,80,104,32);
+      move(GetDlgItem(w,103),256,206,cw-284,68);
+      move(GetDlgItem(w,104),256,278,cw-284,68);
+      move(GetDlgItem(w,105),256,406,cw-284,68);
+      if(batch)EndDeferWindowPos(batch);
+      InvalidateRect(w, nullptr, FALSE);
+      return 0;
+    }
+    case WM_DPICHANGED:{
+      libraryDpi=HIWORD(a);
+      SendMessage(libraryList,LB_SETITEMHEIGHT,0,px(72));
+      RECT suggested=*(RECT*)b;
+      SetWindowPos(w,nullptr,suggested.left,suggested.top,suggested.right-suggested.left,suggested.bottom-suggested.top,SWP_NOZORDER|SWP_NOACTIVATE);
+      return 0;
+    }
+    case WM_CLOSE:
+      DestroyWindow(w);
+      return 0;
+    case WM_GETMINMAXINFO:
+      ((MINMAXINFO *)b)->ptMinTrackSize = {px(720), px(555)};
+      return 0;
+    case WM_SHOWWINDOW:
+      if (a) {
+        lastSample = 0;
+        SetTimer(w, 1, 1000, nullptr);
+      } else
+        KillTimer(w, 1);
+      break;
+    case WM_TIMER:
+      if (a == 3 && !posterPending) {
+        KillTimer(w, 3);
+        loadPreview();
+      }
+      if (a == 1 && !IsIconic(w)) {
+        static fs::path shownSource;static bool shownPaused=false,shownSaver=false;
+        if(shownSource!=source || shownPaused!=paused || shownSaver!=batteryOverride){
+          shownSource=source;shownPaused=paused;shownSaver=batteryOverride;InvalidateRect(libraryList,nullptr,FALSE);
+        }
+        if(!settingsPage){
+          updateActionLabel();
+          sampleStats();
+          RECT dirty;GetClientRect(w,&dirty);dirty.left=px(264);dirty.top=px(heroBottom(dip(dirty.right),dip(dirty.bottom))+16);
+          InvalidateRect(w,&dirty,FALSE);
+        }
+      }
+      if (a == 2) {
+        previewOpacity = std::min(1.f, previewOpacity + .1f);
+        if (previewOpacity == 1)
+          KillTimer(w, 2);
+        RECT art;GetClientRect(w,&art);art.left=px(264);art.top=px(92);art.bottom=px(heroBottom(dip(art.right),dip(art.bottom)));art.right-=px(28);
+        InvalidateRect(w,&art,FALSE);
+      }
+      return 0;
+    case PreviewReady:
+      if(a==previewRequest){
+        int i=selectedIndex();
+        if(i>=0 && fs::exists(thumbnailPath(libraryFiles[i]))){
+          rowImages[i]=readArtwork(artworkPath(libraryFiles[i]),true);
+          loadPreview();InvalidateRect(libraryList,nullptr,FALSE);
+        }
+      }
+      return 0;
+    case WM_SETCURSOR:
+      if((HWND)a==w && titleHot){SetCursor(LoadCursor(nullptr,IDC_HAND));return TRUE;}
+      break;
+    case WM_MOUSEMOVE:
+    case WM_MOUSELEAVE:{
+      POINT at{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
+      bool hot=message==WM_MOUSEMOVE && !settingsPage && selectedIndex()>=0 && PtInRect(&titleBox,at);
+      if(message==WM_MOUSEMOVE){TRACKMOUSEEVENT leave{sizeof leave,TME_LEAVE,w,0};TrackMouseEvent(&leave);}
+      if(hot!=titleHot){
+        titleHot=hot;
+        RECT dirty{px(titleBox.left)-2,px(titleBox.top)-2,px(titleBox.right)+2,px(titleBox.bottom)+2};
+        InvalidateRect(w,&dirty,FALSE);
+      }
+      return 0;
+    }
+    case WM_LBUTTONUP:{
+      POINT click{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
+      if(!settingsPage && PtInRect(&titleBox,click))SendMessage(w,WM_COMMAND,110,0);
+      return 0;
+    }
+    case WM_COMMAND: {
+      int id = LOWORD(a);
+      if (id == 100 && HIWORD(a) == LBN_SELCHANGE){
+        setUiPage(false);loadPreview();
+      }
+      if (id == 106 || id == 107)
+        setUiPage(id == 106);
+      if(id==108){
+        RECT button;GetWindowRect(GetDlgItem(w,108),&button);
+        POINT anchor{button.left,button.top};
+        menu(&anchor);return 0;
+      }
+      if(id==109){
+        int i=selectedIndex();
+        if(i<0 || applyingPause)return 0;
+        auto name=displayName(libraryFiles[i]);
+        if(DialogBoxParam(instance,MAKEINTRESOURCE(310),w,removeProc,(LPARAM)name.c_str())!=IDOK)return 0;
+        auto removed=libraryFiles[i];libraryFiles.erase(libraryFiles.begin()+i);
+        try{saveLibrary();}catch(...){libraryFiles.insert(libraryFiles.begin()+i,removed);throw;}
+        if(!_wcsicmp(removed.c_str(),source.c_str())){closePlayer();paused=true;freezePending=posterPending=false;position=0;source.clear();saveState();status(L"Litely - no wallpaper selected");}
+        ++previewRequest;fillList();return 0;
+      }
+      if(id==110 || (id==100 && HIWORD(a)==LBN_DBLCLK)){
+        int i=selectedIndex();
+        if(i>=0){
+          auto name=displayName(libraryFiles[i]);
+          if(DialogBoxParam(instance,MAKEINTRESOURCE(200),w,renameProc,(LPARAM)name.c_str())==1){
+            fillList();SendMessage(libraryList,LB_SETCURSEL,i,0);loadPreview();
+          }
+        }
+        return 0;
+      }
+      if (id == 101) {
+        wchar_t path[32768]{};
+        OPENFILENAME of{sizeof of};
+        of.hwndOwner = w;
+        of.lpstrFilter = L"MP4 video\0*.mp4\0";
+        of.lpstrFile = path;
+        of.nMaxFile = 32768;
+        of.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+        if (GetOpenFileName(&of)) {
+          setUiPage(false);
+          ImportJob job{fs::path(path),{}};
+          if(DialogBoxParam(instance,MAKEINTRESOURCE(300),w,importProc,(LPARAM)&job)!=1)return 0;
+          if(job.result!=job.original){
+            auto key=posterPath(job.result).stem().wstring();
+            WritePrivateProfileString(L"names",key.c_str(),displayName(job.original).c_str(),(folder/L"library-names.ini").c_str());
+          }
+          addLibrary(job.result);
+          saveLibrary();
+          fillList(fs::weakly_canonical(job.result));
+        }
+      }
+
+      if (id == 102) {
+        int i = selectedIndex();
+        if (i >= 0) {
+          if (!fs::exists(libraryFiles[i])) {
+            MessageBox(
+                w, L"This video has moved. Add its new location with Add MP4.",
+                L"Litely", MB_OK);
+            return 0;
+          }
+          if (!_wcsicmp(libraryFiles[i].c_str(), source.c_str()))
+            toggle();
+          else
+            activateSource(libraryFiles[i]);
+          updateActionLabel();InvalidateRect(libraryList,nullptr,FALSE);
+          if(posterPending)SetTimer(w, 3, 1000, nullptr);
+        }
+      }
+      if (id == 103 || id == 104) {
+        SendMessage(controller, WM_COMMAND,
+                    id == 104 ? MaximumSavings : SmoothResume, 0);
+        SendMessage(GetDlgItem(w,103),BM_SETCHECK,!maximumSavings,0);
+        SendMessage(GetDlgItem(w,104),BM_SETCHECK,maximumSavings,0);
+        for(int choice:{103,104})InvalidateRect(GetDlgItem(w,choice),nullptr,FALSE);
+        return 0;
+      }
+      if (id == 105) {
+        batteryRule =
+            SendMessage(GetDlgItem(w, 105), BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (!WritePrivateProfileString(L"wallpaper", L"batteryRule",
+                                       batteryRule ? L"1" : L"0",
+                                       (folder / L"settings.ini").c_str()))
+          throw E_FAIL;
+        updateBattery();return 0;
+      }
+      InvalidateRect(w, nullptr, FALSE);
+      return 0;
+    }
+    case WM_NOTIFY: {
+      auto header=reinterpret_cast<NMHDR*>(b);
+      if(header->code!=NM_CUSTOMDRAW || header->idFrom<103 || header->idFrom>105)break;
+      auto &draw=*reinterpret_cast<NMCUSTOMDRAW*>(b);
+      if(draw.dwDrawStage!=CDDS_PREPAINT)return CDRF_DODEFAULT;
+      RECT bounds;GetClientRect(header->hwndFrom,&bounds);
+      HDC dc=CreateCompatibleDC(draw.hdc);HBITMAP bitmap=CreateCompatibleBitmap(draw.hdc,bounds.right,bounds.bottom);
+      auto old=SelectObject(dc,bitmap);
+      wchar_t label[128];GetWindowText(header->hwndFrom,label,128);
+      int id=(int)header->idFrom;
+      drawChoice(dc,units(bounds),label,choiceDescription(id),SendMessage(header->hwndFrom,BM_GETCHECK,0,0)==BST_CHECKED,
+                 id==105,true,hovered(header->hwndFrom),(draw.uItemState&CDIS_FOCUS) && keyboardCues(header->hwndFrom),cWindow);
+      BitBlt(draw.hdc,0,0,bounds.right,bounds.bottom,dc,0,0,SRCCOPY);
+      SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
+      return CDRF_SKIPDEFAULT;
+    }
+    case WM_MEASUREITEM:((MEASUREITEMSTRUCT*)b)->itemHeight=px(72);return TRUE;
+    case WM_DRAWITEM:{
+      auto d=(DRAWITEMSTRUCT*)b;
+      if(d->CtlID==100 && d->itemID==(UINT)-1)return TRUE;
+      HDC target=d->hDC;
+      RECT bounds=d->rcItem;
+      int widthPx=bounds.right-bounds.left,heightPx=bounds.bottom-bounds.top;
+      HDC buffer=CreateCompatibleDC(target);
+      HBITMAP bitmap=CreateCompatibleBitmap(target,widthPx,heightPx);
+      if(!buffer || !bitmap){if(buffer)DeleteDC(buffer);if(bitmap)DeleteObject(bitmap);return FALSE;}
+      auto old=SelectObject(buffer,bitmap);
+      RECT r{0,0,dip(widthPx),dip(heightPx)};
+      if(d->CtlID==100){
+        int i=(int)d->itemID;bool selected=(d->itemState&ODS_SELECTED)!=0,hot=i==hoveredRow;
+        fillRect(buffer,r,cSidebar);
+        RECT card{r.left+2,r.top+2,r.right-2,r.bottom-2};
+        COLORREF fill=selected?cSelected:hot?cHover:cSidebar;
+        if(selected){fillRound(buffer,card,cSelectedLine,8);InflateRect(&card,-1,-1);}
+        if(selected || hot)fillRound(buffer,card,fill,7);
+        RECT thumb{r.left+12,r.top+14,r.left+65,r.top+58};
+        if(i<(int)rowImages.size() && rowImages[i] && rowImages[i]->GetLastStatus()==Gdiplus::Ok)
+          drawCover(buffer,rowImages[i].get(),thumb);
+        else{fillRound(buffer,thumb,cRaised,5);paintIcon(buffer,L"",thumb,16,cMuted);}
+        roundCorners(buffer,thumb,5,fill);
+        paintText(buffer,displayName(libraryFiles[i]),{r.left+76,r.top+15,r.right-8,r.top+34},13,cText,FW_SEMIBOLD);
+        bool active=!_wcsicmp(libraryFiles[i].c_str(),source.c_str());
+        auto detail=active?(paused||batteryOverride?L"On desktop · paused":L"On desktop"):videoDetails[i];
+        paintText(buffer,detail,{r.left+76,r.top+37,r.right-8,r.bottom-8},12,active?cAccent:cMuted);
+        if(selected && (d->itemState&ODS_FOCUS) && keyboardCues(d->hwndItem))focusRing(buffer,{r.left+2,r.top+2,r.right-2,r.bottom-2},8);
+      }else{
+        int id=d->CtlID;
+        const wchar_t *glyph=id==101?L"":id==106?L"":id==108?L"":id==107?L"":id==109?L"":nullptr;
+        bool sidebar=id==101 || id==106 || id==108;
+        COLORREF background=sidebar?cSidebar:cWindow;
+        if(id==106 && settingsPage){fillRect(buffer,r,background);fillRound(buffer,r,cSelected,7);background=cSelected;}
+        ButtonStyle style{id==102,background,glyph,id==106 || id==108,id==101?RGB(215,200,255):CLR_INVALID,id==109};
+        drawButton(buffer,*d,r,style);
+      }
+      BitBlt(target,bounds.left,bounds.top,widthPx,heightPx,buffer,0,0,SRCCOPY);
+      SelectObject(buffer,old);DeleteObject(bitmap);DeleteDC(buffer);
+      return TRUE;
+    }
+    case WM_CTLCOLORLISTBOX:
+      SetDCBrushColor((HDC)a,cSidebar);
+      return (LRESULT)GetStockObject(DC_BRUSH);
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN:
+      SetTextColor((HDC)a, cText);
+      SetBkColor((HDC)a, cWindow);
+      return (LRESULT)uiBrush;
+    case WM_ERASEBKGND:
+      return 1;
+    case WM_PAINT: {
+      PAINTSTRUCT ps;
+      HDC screen = BeginPaint(w, &ps);
+      RECT r;
+      GetClientRect(w, &r);
+      HDC dc = CreateCompatibleDC(screen);
+      HBITMAP buffer = CreateCompatibleBitmap(screen, r.right, r.bottom);
+      auto old = SelectObject(dc, buffer);
+      RECT pixels=r;r=units(r);
+      {UiDC mapping(dc);
+      FillRect(dc, &r, uiBrush);
+      panel(dc,{0,65,236,r.bottom},cSidebar);
+      panel(dc,{0,64,r.right,65},cLine);
+      panel(dc,{235,65,236,r.bottom},cLine);
+      panel(dc,{24,r.bottom-102,212,r.bottom-101},cLine);
+      }
+      DrawIconEx(dc,px(23),px(16),LoadIcon(instance,MAKEINTRESOURCE(IDI_LITELY)),px(32),px(32),0,nullptr,DI_NORMAL);
+      paintText(dc,L"Litely",{66,16,236,50},22,cText,FW_SEMIBOLD,DT_LEFT|DT_VCENTER|DT_SINGLELINE,displayFace());
+      paintText(dc,L"Library",{24,84,120,108},15,cText,FW_SEMIBOLD,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+      int left=264,right=r.right-28;
+      if(settingsPage){
+        paintText(dc,L"Settings",{left,118,right,158},28,cText,FW_SEMIBOLD);
+        paintText(dc,L"Performance",{left,176,right,198},15,cText,FW_SEMIBOLD);
+        {UiDC mapping(dc);panel(dc,{left,358,right,359},cLine);}
+        paintText(dc,L"Battery",{left,376,right,398},15,cText,FW_SEMIBOLD);
+      }else{
+        int i=selectedIndex();
+        int hero=heroBottom(r.right,r.bottom);
+        RECT art{left,92,right,hero};
+        {UiDC mapping(dc);panel(dc,art,cRaised);}
+        RECT damage=units(ps.rcPaint),hit{};
+        if(previewImage && IntersectRect(&hit,&art,&damage)){
+          drawCover(dc,previewImage.get(),art,previewOpacity);
+          Smooth s(dc);auto box=frect({art.left,art.bottom-120,art.right,art.bottom});
+          Gdiplus::LinearGradientBrush shade(Gdiplus::PointF(0,box.Y-1),Gdiplus::PointF(0,box.GetBottom()+1),gdip(RGB(8,9,16),0),gdip(RGB(8,9,16),225));
+          s.g.FillRectangle(&shade,box);
+        }
+        if(i<0)paintIcon(dc,L"",{art.left,art.top,art.right,art.bottom-70},40,cMuted);
+        roundCorners(dc,art,12,cWindow);
+        std::wstring details=i>=0?videoDetails[i]+(isPlaybackCopy(libraryFiles[i])?L" · Playback copy":L" · Original file"):L"Use Add MP4 to import a video";
+        std::wstring name=i>=0?displayName(libraryFiles[i]):L"Add your first wallpaper";
+        paintText(dc,details,{left+22,hero-82,right-18,hero-62},13,RGB(227,222,233));
+        RECT nameBox{left+22,hero-60,right-58,hero-12};
+        if(i>=0){
+          HDC measure=CreateCompatibleDC(dc);
+          int nameWidth=paintText(measure,name,{0,0,0,0},34,cText,FW_SEMIBOLD,DT_CALCRECT|DT_SINGLELINE);
+          DeleteDC(measure);
+          titleBox={left+10,hero-62,std::min(left+22+nameWidth,(int)nameBox.right)+48,hero-8};
+          if(titleHot){
+            fillRound(dc,titleBox,RGB(255,255,255),10,22);
+            strokeRound(dc,titleBox,RGB(255,255,255),10,1.5f,120);
+            paintIcon(dc,L"",{titleBox.right-40,titleBox.top,titleBox.right-12,titleBox.bottom},18,cText);
+          }
+        }else titleBox={};
+        paintText(dc,name,nameBox,34,cText,FW_SEMIBOLD);
+        bool active=i>=0 && !_wcsicmp(libraryFiles[i].c_str(),source.c_str());
+        bool playing=active && !paused && !batteryOverride && !covered;
+        const wchar_t *state=i<0?L"":!active?L"Not on desktop":batteryOverride?L"Paused for Energy Saver":paused?L"Paused":
+                            covered?L"Desktop covered":L"Playing";
+        const wchar_t *glyph=i<0?L"":!active?L"":playing?L"":L"";
+        paintIcon(dc,glyph,{left,hero+24,left+18,hero+44},14,playing?cAccent:cSoft);
+        paintText(dc,state,{left+26,hero+16,right-250,hero+52},13,cSoft,FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
+        int divider=hero+68;
+        {UiDC mapping(dc);panel(dc,{left,divider,right,divider+1},cLine);}
+        int headingEnd=left+paintText(dc,L"Litely usage",{left,divider+18,right,divider+40},15,cText,FW_SEMIBOLD);
+        if(!source.empty())
+          paintText(dc,L"·  "+displayName(source),{headingEnd+10,divider+21,right,divider+40},12,cMuted);
+        int col=(right-left)/3;
+        for(int k=0;k<3;k++){
+          int x=left+col*k;
+          if(k){UiDC mapping(dc);panel(dc,{x-1,divider+52,x,divider+98},cLine);x+=18;}
+          paintText(dc,k==0?L"CPU":k==1?L"RAM":L"Video memory",{x,divider+50,right,divider+68},12,cMuted);
+          const auto &value=k==0?cpuValue:k==1?ramValue:gpuValue;
+          size_t space=value.find(L' ');
+          int end=x+paintText(dc,value.substr(0,space),{x,divider+68,right,divider+98},23,cText,FW_SEMIBOLD,DT_LEFT|DT_TOP|DT_SINGLELINE,textFace());
+          if(space!=std::wstring::npos)
+            paintText(dc,value.substr(space+1),{end+4,divider+78,right,divider+98},12,cMuted);
+        }
+        paintText(dc,savingsText,{left,divider+108,right,divider+126},12,cMuted);
+      }
+      BitBlt(screen, 0, 0, pixels.right, pixels.bottom, dc, 0, 0, SRCCOPY);
+      SelectObject(dc, old);
+      DeleteObject(buffer);
+      DeleteDC(dc);
+      EndPaint(w, &ps);
+      return 0;
+    }
+    case WM_DESTROY:
+      ++previewRequest;
+      hoveredRow=-1;
+      previewImage.reset();
+      rowImages.clear();
+      videoDetails.clear();
+      DeleteObject(uiFont);
+      DeleteObject(uiBrush);
+      uiFont = nullptr;
+      uiBrush = nullptr;
+      libraryWindow = nullptr;
+      Gdiplus::GdiplusShutdown(graphicsToken);
+      return 0;
+    }
+  } catch (HRESULT error) {
+    wchar_t text[160];
+    swprintf_s(text, L"Litely could not complete that action (0x%08X).", unsigned(error));
+    MessageBox(w, text, L"Litely", MB_OK | MB_ICONERROR);
+  } catch (const std::exception &error) {
+    wchar_t text[400];
+    swprintf_s(text, L"Litely could not complete that action.\n%hs", error.what());
+    MessageBox(w, text, L"Litely", MB_OK | MB_ICONERROR);
+  } catch (...) {
+    MessageBox(w, L"Litely could not complete that action.", L"Litely", MB_OK | MB_ICONERROR);
+  }
+  return DefWindowProc(w, message, a, b);
+}
+void openLibrary(bool settings = false) {
+  if (libraryWindow) {
+    ShowWindow(libraryWindow, SW_RESTORE);
+    SetForegroundWindow(libraryWindow);
+    setUiPage(settings);
+    return;
+  }
+  libraryFiles.clear();
+  auto path = folder / L"library.txt";
+  if (fs::exists(path)) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), {});
+    if (bytes.size() >= 2 && bytes.size() % 2 == 0) {
+      std::wstring text(bytes.size() / 2, L'\0');
+      memcpy(text.data(), bytes.data(), bytes.size());
+      size_t start = 1;
+      for (size_t i = 1; i <= text.size(); i++)
+        if (i == text.size() || text[i] == L'\n') {
+          if (i > start)
+            addLibrary(text.substr(start, i - start));
+          start = i + 1;
+        }
+    }
+  }
+  addLibrary(source);
+  wchar_t exe[32768];
+  GetModuleFileName(nullptr, exe, 32768);
+  auto samples = fs::path(exe).parent_path() / L"wallpapers";
+  if (!fs::exists(path) && fs::exists(samples))
+    for (auto &file : fs::directory_iterator(samples))
+      if (file.path().extension() == L".mp4")
+        addLibrary(file.path());
+  saveLibrary();
+  Gdiplus::GdiplusStartupInput input;
+  check(Gdiplus::GdiplusStartup(&graphicsToken, &input, nullptr) == Gdiplus::Ok
+            ? S_OK
+            : E_FAIL);
+  WNDCLASS wc{};
+  wc.hInstance = instance;
+  wc.lpfnWndProc = libraryProc;
+  wc.lpszClassName = L"LitelyLibrary";
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hIcon = LoadIcon(instance, MAKEINTRESOURCE(IDI_LITELY));
+  RegisterClass(&wc);
+  libraryDpi=GetDpiForSystem();
+  RECT work{};SystemParametersInfo(SPI_GETWORKAREA,0,&work,0);
+  libraryWindow =
+      CreateWindowEx(WS_EX_CONTROLPARENT, wc.lpszClassName, L"Litely",
+                     WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, std::min<int>(px(1060),work.right-work.left),
+                     std::min<int>(px(720),work.bottom-work.top), nullptr, nullptr, instance, nullptr);
+  RECT client{};GetClientRect(libraryWindow,&client);
+  SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));
+  themeWindow(libraryWindow);
+  fillList();
+  sampleStats();
+  setUiPage(settings);
+  SetWindowPos(libraryWindow,nullptr,0,0,0,0,SWP_NOSIZE|SWP_NOMOVE|SWP_NOZORDER|SWP_SHOWWINDOW);
+  RedrawWindow(libraryWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+  SetForegroundWindow(libraryWindow);
+}
