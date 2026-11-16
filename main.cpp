@@ -43,7 +43,7 @@ using Microsoft::WRL::ComPtr;
 using namespace Microsoft::WRL;
 namespace fs = std::filesystem;
 constexpr UINT Tray = WM_APP + 1, Media = WM_APP + 2, Visibility = WM_APP + 3,
-               PosterApplied = WM_APP + 4;
+               PosterApplied = WM_APP + 4, TestPower = WM_APP + 5;
 constexpr UINT_PTR Draw = 1, Inspect = 2, Unload = 3;
 HWND controller;
 HINSTANCE instance;
@@ -58,6 +58,8 @@ bool maximumSavings = false, batteryRule = false, batteryOverride = false;
 HPOWERNOTIFY acHook, saverHook;
 void updateBattery();
 void updateBatteryCopy();
+void updatePlayFile();
+extern int testPower;
 void finishBatteryCopy();
 void stopBatteryCopy(bool cancelled);
 extern bool batteryFps;
@@ -188,7 +190,10 @@ public:
     return S_OK;
   }
 };
-fs::path playFile() { return source; }
+fs::path playFile();
+fs::path playingFile;
+bool swapPending = false, swapKept = false;
+double swapAt = 0;
 bool playerOpen() { return engine || leanActive; }
 HRESULT playerPlay() {
   if (!leanActive)
@@ -207,7 +212,7 @@ double playerTime() { return leanActive ? position : engine->GetCurrentTime(); }
 double playerDuration() { return leanActive ? leanDuration : engine->GetDuration(); }
 void playerSeek(double seconds) {
   if (leanActive)
-    leanRestart(playFile(), seconds);
+    leanRestart(playingFile, seconds);
   else
     check(engine->SetCurrentTime(seconds));
 }
@@ -232,10 +237,11 @@ void openPlayer() {
   if (playerOpen() || source.empty())
     return;
   createDevice();
+  playingFile = playFile();
   wchar_t forced[16]{};
   GetEnvironmentVariableW(L"LITELY_PIPELINE", forced, 16);
   if (wcscmp(forced, L"legacy") && leanFailedFor != source) {
-    leanOpen(playFile(), position);
+    leanOpen(playingFile, position);
     return;
   }
   ComPtr<IMFAttributes> attr;
@@ -253,7 +259,7 @@ void openPlayer() {
   check(engine->SetLoop(TRUE));
   DWORD chars = 32768;
   wchar_t url[32768];
-  check(UrlCreateFromPathW(playFile().c_str(), url, &chars, 0));
+  check(UrlCreateFromPathW(playingFile.c_str(), url, &chars, 0));
   BSTR b = SysAllocString(url);
   HRESULT result = engine->SetSource(b);
   SysFreeString(b);
@@ -556,6 +562,15 @@ void draw() {
     report << L"resume offset (ms): " << (pts / 1e7 - position) * 1000
            << std::endl;
   position = pts / 1e7;
+  if (swapPending) {
+    swapPending = false;
+    wchar_t log[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LITELY_TEST_LOG", log, MAX_PATH)) {
+      std::wofstream out(log, std::ios::app);
+      out << L"swap " << playingFile.filename().wstring() << L" at " << std::fixed << swapAt << L" first "
+          << position << (swapKept ? L" kept" : L" reopened") << std::endl;
+    }
+  }
   if (!presented) {
     presented = true;
     for (auto &d : displays)
@@ -812,7 +827,7 @@ void visibility() {
     openPlayer();
   else if (resume && ready)
     resumePlayer();
-  status(L"Litely - playing");
+  status(playingFile != source ? L"Litely - playing (30 fps on battery)" : L"Litely - playing");
 }
 void CALLBACK windowEvent(HWINEVENTHOOK, DWORD event, HWND w, LONG object,
                           LONG child, DWORD, DWORD) {
@@ -1059,8 +1074,17 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
         visibility();
       }
       return 0;
+    case TestPower:
+      if (testPower < 0)
+        return 0;
+      testPower = a != 0;
+      [[fallthrough]];
     case WM_POWERBROADCAST:
       updateBattery();
+      updateBatteryCopy();
+      updatePlayFile();
+      if (msg == TestPower)
+        return 0;
       if (a == PBT_POWERSETTINGCHANGE) {
         auto p = reinterpret_cast<POWERBROADCAST_SETTING *>(b);
         if (p->PowerSetting == GUID_CONSOLE_DISPLAY_STATE &&
@@ -1080,7 +1104,11 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
         return 0;
       }
       if (b == LeanReady && ready) {
-        if (!leanPaused())
+        if (leanWidth != width || leanHeight != height) {
+          swapKept = false;
+          closePlayer();
+          openPlayer();
+        } else if (!leanPaused())
           startClock();
         return 0;
       }

@@ -568,6 +568,39 @@ fs::path batteryCopyPath(const fs::path &video){
   if(video.empty() || !fs::exists(video,ignored))return {};
   return copyDirectory(video)/(video.stem().wstring()+L"-original-30fps.mp4");
 }
+int testPower=[]{
+  wchar_t value[16]{};
+  return GetEnvironmentVariableW(L"LITELY_TEST_POWER",value,16)?int(!wcscmp(value,L"battery")):-1;
+}();
+bool onBattery(){
+  if(testPower>=0)return testPower==1;
+  SYSTEM_POWER_STATUS power{};
+  return GetSystemPowerStatus(&power) && power.ACLineStatus==0;
+}
+fs::path playFile(){
+  std::error_code ignored;
+  if(batteryFps && onBattery()){
+    auto copy=batteryCopyPath(source);
+    if(!copy.empty() && fs::exists(copy,ignored))return copy;
+  }
+  return source;
+}
+void visibility();
+// Swaps only the decoder's file when it can, so the last frame stays on screen.
+void updatePlayFile(){
+  auto next=playFile();
+  if(!playerOpen() || next==playingFile)return;
+  swapPending=true;swapAt=position;
+  swapKept=leanActive && ready;
+  if(swapKept){
+    playingFile=next;
+    leanRestart(next,position);
+  }else{
+    closePlayer();
+    openPlayer();
+  }
+  visibility();
+}
 void stopBatteryCopy(bool cancelled){
   ImportJob job;
   job.process=batteryCopyProcess;job.group=batteryCopyGroup;job.result=batteryCopyPath(batteryCopyVideo);
@@ -610,6 +643,7 @@ void finishBatteryCopy(){
   bool made=code==0 && !copy.empty() && fs::exists(copy,ignored);
   stopBatteryCopy(!made);
   if(!made)batteryCopyFailed=true;
+  else updatePlayFile();
   refreshSettings();
 }
 void readProgress(ImportJob &job){
@@ -1163,6 +1197,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           throw E_FAIL;
         batteryCopyFailed = false;
         updateBatteryCopy();
+        updatePlayFile();
         refreshSettings();
         return 0;
       }
@@ -1305,7 +1340,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         bool active=i>=0 && !_wcsicmp(libraryFiles[i].c_str(),source.c_str());
         bool playing=active && !paused && !batteryOverride && !covered;
         const wchar_t *state=i<0?L"":!active?L"Not on desktop":batteryOverride?L"Paused for Energy Saver":paused?L"Paused":
-                            covered?L"Desktop covered":L"Playing";
+                            covered?L"Desktop covered":playingFile!=source?L"Playing · 30 fps on battery":L"Playing";
         const wchar_t *glyph=i<0?L"":!active?L"":playing?L"":L"";
         paintIcon(dc,glyph,{left,hero+24,left+18,hero+44},14,playing?cAccent:cSoft);
         paintText(dc,state,{left+26,hero+16,right-250,hero+52},13,cSoft,FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
