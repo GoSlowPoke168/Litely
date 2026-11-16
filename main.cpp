@@ -838,6 +838,11 @@ void toggle() {
   }
   if (source.empty())
     return;
+  if (freezePending) {
+    freezePending = false;
+    visibility();
+    return;
+  }
   if (paused) {
     paused = covered = false;
     if (!ready)

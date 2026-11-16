@@ -229,8 +229,11 @@ void leanDropStill() {
   leanProcessor.Reset();
   leanEnumerator.Reset();
   leanStillTexture.Reset();
-  if (context)
+  ComPtr<IDXGIDevice3> trimmer;
+  if (context && SUCCEEDED(device.As(&trimmer))) {
     context->Flush();
+    trimmer->Trim();
+  }
 }
 void leanClose() {
   leanJoin();
