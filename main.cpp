@@ -346,13 +346,21 @@ void createOutput(UINT videoWidth, UINT videoHeight, bool nv12) {
     check(f->CreateSwapChainForComposition(device.Get(), &desc, nullptr, &chain));
     content = chain;
   }
-  HWND parent = desktop();
+  // Probe only: a 1:1 topmost window whose screen pixels can be compared with the still.
+  bool topmost = probe && GetEnvironmentVariableW(L"LITELY_PROBE_TOPMOST", nullptr, 0);
+  HWND parent = topmost ? nullptr : desktop();
   for (auto &d : displays) {
     int w = d.rect.right - d.rect.left, h = d.rect.bottom - d.rect.top;
     POINT p{d.rect.left, d.rect.top};
     if (parent)
       ScreenToClient(parent, &p);
     DWORD ex = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP;
+    if (topmost) {
+      w = width;
+      h = height;
+      p = {40, 40};
+      ex |= WS_EX_TOPMOST;
+    }
     if (parent && iconLayer)
       ex |= WS_EX_LAYERED;
     d.window = CreateWindowEx(ex, L"LitelySurface", L"Litely",
@@ -377,8 +385,9 @@ void createOutput(UINT videoWidth, UINT videoHeight, bool nv12) {
     check(d.visual->SetTransform(m));
     check(d.visual->SetContent(content.Get()));
     check(d.target->SetRoot(d.visual.Get()));
-    SetWindowPos(d.window, iconLayer ? iconLayer : HWND_BOTTOM, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (!topmost)
+      SetWindowPos(d.window, iconLayer ? iconLayer : HWND_BOTTOM, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
   check(compositor->Commit());
 }
@@ -1348,6 +1357,38 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
             throw E_FAIL;
           report << L"paused pixels exactly match the last submitted frame"
                  << std::endl;
+          if (GetEnvironmentVariableW(L"LITELY_PROBE_TOPMOST", nullptr, 0)) {
+            Sleep(400);
+            HWND shown = displays[0].window;
+            POINT centre{40 + LONG(width) / 2, 40 + LONG(height) / 2};
+            if (WindowFromPoint(centre) != shown)
+              throw E_ACCESSDENIED;
+            HDC screen = GetDC(nullptr), memoryDC = CreateCompatibleDC(screen);
+            BITMAPINFO info{};
+            info.bmiHeader.biSize = sizeof info.bmiHeader;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -LONG(height);
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            void *bits = nullptr;
+            HBITMAP grab = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+            HGDIOBJ previous = SelectObject(memoryDC, grab);
+            BitBlt(memoryDC, 0, 0, width, height, screen, 40, 40, SRCCOPY);
+            GdiFlush();
+            BITMAPFILEHEADER header{};
+            header.bfType = 0x4d42;
+            header.bfOffBits = sizeof header + sizeof info.bmiHeader;
+            header.bfSize = header.bfOffBits + width * height * 4;
+            auto path = snapshot;
+            std::ofstream out(path.replace_extension(L".screen.bmp"), std::ios::binary);
+            out.write((char *)&header, sizeof header);
+            out.write((char *)&info.bmiHeader, sizeof info.bmiHeader);
+            out.write((char *)bits, width * height * 4);
+            SelectObject(memoryDC, previous);
+            DeleteObject(grab);
+            DeleteDC(memoryDC);
+            ReleaseDC(nullptr, screen);
+          }
           memory(L"paused");
           if (!playerOpen() || !playerPaused() || !parked ||
               !fs::exists(snapshot))
