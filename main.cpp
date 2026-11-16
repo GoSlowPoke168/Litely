@@ -3,6 +3,8 @@
 #include "resource.h"
 
 #include <algorithm>
+#include <avrt.h>
+#pragma comment(lib,"avrt.lib")
 #include <cmath>
 #include <gdiplus.h>
 #include <memory>
@@ -11,13 +13,19 @@
 #include <commctrl.h>
 #pragma comment(lib,"comctl32.lib")
 #include <d3d10_1.h>
-#include <d3d11.h>
+#include <d3d11_1.h>
 #include <dcomp.h>
 #include <dwmapi.h>
 #include <dxgi1_4.h>
 #include <filesystem>
 #include <fstream>
+#include <condition_variable>
+#include <deque>
 #include <mfapi.h>
+#include <mferror.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <mutex>
 #include <mfmediaengine.h>
 #include <psapi.h>
 #include <shellapi.h>
@@ -128,6 +136,10 @@ void memory(const wchar_t *label) {
            << L" private commit MiB " << m.PrivateUsage / 1048576.0
            << std::endl;
 }
+using Clock = std::chrono::steady_clock;
+HANDLE surfaceHandle;
+fs::path leanFailedFor;
+#include "lean_player.h"
 void closePlayer() {
   if (ticks)
     CancelWaitableTimer(ticks);
@@ -138,6 +150,7 @@ void closePlayer() {
     // position tracks the frame submitted to the compositor.
     engine->Shutdown();
   }
+  leanClose();
   ready = presented = parked = false;
   engine.Reset();
   for (auto &d : displays) {
@@ -148,6 +161,9 @@ void closePlayer() {
     d.window = nullptr;
   }
   chain.Reset();
+  if (surfaceHandle)
+    CloseHandle(surfaceHandle);
+  surfaceHandle = nullptr;
   compositor.Reset();
   manager.Reset();
   context.Reset();
@@ -167,13 +183,28 @@ public:
   }
 };
 fs::path playFile() { return source; }
-bool playerOpen() { return engine != nullptr; }
-HRESULT playerPlay() { return engine->Play(); }
-HRESULT playerPause() { return engine->Pause(); }
-bool playerPaused() { return engine->IsPaused() != FALSE; }
-double playerTime() { return engine->GetCurrentTime(); }
-double playerDuration() { return engine->GetDuration(); }
-void playerSeek(double seconds) { check(engine->SetCurrentTime(seconds)); }
+bool playerOpen() { return engine || leanActive; }
+HRESULT playerPlay() {
+  if (!leanActive)
+    return engine->Play();
+  leanPlay();
+  return S_OK;
+}
+HRESULT playerPause() {
+  if (!leanActive)
+    return engine->Pause();
+  leanPause();
+  return S_OK;
+}
+bool playerPaused() { return leanActive ? leanPaused() : engine->IsPaused() != FALSE; }
+double playerTime() { return leanActive ? position : engine->GetCurrentTime(); }
+double playerDuration() { return leanActive ? leanDuration : engine->GetDuration(); }
+void playerSeek(double seconds) {
+  if (leanActive)
+    leanRestart(playFile(), seconds);
+  else
+    check(engine->SetCurrentTime(seconds));
+}
 void createDevice() {
   if (!mediaStarted) {
     check(MFStartup(MF_VERSION));
@@ -195,6 +226,12 @@ void openPlayer() {
   if (playerOpen() || source.empty())
     return;
   createDevice();
+  wchar_t forced[16]{};
+  GetEnvironmentVariableW(L"LITELY_PIPELINE", forced, 16);
+  if (wcscmp(forced, L"legacy") && leanFailedFor != source) {
+    leanOpen(playFile(), position);
+    return;
+  }
   ComPtr<IMFAttributes> attr;
   check(MFCreateAttributes(&attr, 4));
   auto events = Make<Events>();
@@ -260,7 +297,7 @@ HWND desktop() {
     throw E_HANDLE;
   return worker;
 }
-void createOutput(UINT videoWidth, UINT videoHeight) {
+void createOutput(UINT videoWidth, UINT videoHeight, bool nv12) {
   width = videoWidth;
   height = videoHeight;
   if (!width || !height)
@@ -270,7 +307,7 @@ void createOutput(UINT videoWidth, UINT videoHeight) {
     maxW = std::max(maxW, UINT(d.rect.right - d.rect.left));
     maxH = std::max(maxH, UINT(d.rect.bottom - d.rect.top));
   }
-  double scale =
+  double scale = nv12 ? 1 :
       std::min(1.0, std::max(double(maxW) / width, double(maxH) / height));
   width = std::max(1u, UINT(std::ceil(width * scale)));
   height = std::max(1u, UINT(std::ceil(height * scale)));
@@ -292,8 +329,23 @@ void createOutput(UINT videoWidth, UINT videoHeight) {
   desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
   desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
   desc.Scaling = DXGI_SCALING_STRETCH;
-  check(f->CreateSwapChainForComposition(device.Get(), &desc, nullptr, &chain));
   check(DCompositionCreateDevice(dx.Get(), IID_PPV_ARGS(&compositor)));
+  ComPtr<IUnknown> content;
+  if (nv12) {
+    desc.Format = DXGI_FORMAT_NV12;
+    desc.Flags = DXGI_SWAP_CHAIN_FLAG_YUV_VIDEO | DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO;
+    ComPtr<IDXGIFactoryMedia> media;
+    check(f.As(&media));
+    check(DCompositionCreateSurfaceHandle(COMPOSITIONOBJECT_ALL_ACCESS, nullptr, &surfaceHandle));
+    check(media->CreateSwapChainForCompositionSurfaceHandle(device.Get(), surfaceHandle, &desc, nullptr, &chain));
+    ComPtr<IDXGISwapChain3> colour;
+    check(chain.As(&colour));
+    check(colour->SetColorSpace1(leanColorSpace));
+    check(compositor->CreateSurfaceFromHandle(surfaceHandle, &content));
+  } else {
+    check(f->CreateSwapChainForComposition(device.Get(), &desc, nullptr, &chain));
+    content = chain;
+  }
   HWND parent = desktop();
   for (auto &d : displays) {
     int w = d.rect.right - d.rect.left, h = d.rect.bottom - d.rect.top;
@@ -323,7 +375,7 @@ void createOutput(UINT videoWidth, UINT videoHeight) {
     m._31 = (w - width * k) / 2;
     m._32 = (h - height * k) / 2;
     check(d.visual->SetTransform(m));
-    check(d.visual->SetContent(chain.Get()));
+    check(d.visual->SetContent(content.Get()));
     check(d.target->SetRoot(d.visual.Get()));
     SetWindowPos(d.window, iconLayer ? iconLayer : HWND_BOTTOM, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -333,7 +385,7 @@ void createOutput(UINT videoWidth, UINT videoHeight) {
 void setupOutput() {
   DWORD nativeW, nativeH;
   check(engine->GetNativeVideoSize(&nativeW, &nativeH));
-  createOutput(nativeW, nativeH);
+  createOutput(nativeW, nativeH, false);
   // Use source cadence where available. Poll only while the wallpaper is
   // visible.
   cadence = 16;
@@ -432,17 +484,15 @@ void preparePoster(bool applyCached) {
 }
 void capture(ID3D11Texture2D *frame);
 bool checkFrontBuffer = false;
-using Clock = std::chrono::steady_clock;
 Clock::time_point probeResume;
 double millisecondsSince(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start)
       .count();
 }
 ULONGLONG seekStarted = 0;
-void draw() {
-  LONGLONG pts;
+bool drawEngine(LONGLONG &pts, ComPtr<ID3D11Texture2D> &texture) {
   if (engine->OnVideoStreamTick(&pts) != S_OK)
-    return;
+    return false;
   // A successful tick can still belong to the beginning of the clip while the
   // seek is pending.
   if (!presented && position > 0 && pts / 1e7 + 0.0001 < position) {
@@ -451,13 +501,26 @@ void draw() {
         GetTickCount64() - seekStarted > 200 && !engine->IsSeeking() &&
         engine->GetCurrentTime() < 0.5;
     if (!wrapped)
-      return;
+      return false;
   }
-  ComPtr<ID3D11Texture2D> texture;
   check(chain->GetBuffer(0, IID_PPV_ARGS(&texture)));
   RECT dest{0, 0, LONG(width), LONG(height)};
   MFARGB black{};
   check(engine->TransferVideoFrame(texture.Get(), nullptr, &dest, &black));
+  return true;
+}
+void draw() {
+  LONGLONG pts;
+  ComPtr<ID3D11Texture2D> texture;
+  if (leanActive) {
+    bool acquired = leanAcquire(&pts);
+    leanSchedule();
+    if (!acquired)
+      return;
+    if (posterPending || checkFrontBuffer)
+      texture = leanStill();
+  } else if (!drawEngine(pts, texture))
+    return;
   if (posterPending) {
     capture(texture.Get());
     if (probe) {
@@ -469,6 +532,10 @@ void draw() {
   }
   if (checkFrontBuffer)
     capture(texture.Get());
+  if (leanActive) {
+    texture.Reset();
+    leanDropStill();
+  }
   check(chain->Present(0, 0));
   if (!presented && probe)
     report << L"resume offset (ms): " << (pts / 1e7 - position) * 1000
@@ -573,8 +640,13 @@ void freeze(bool manual = true) {
   check(playerPause());
   CancelWaitableTimer(ticks);
   ComPtr<ID3D11Texture2D> lastFrame;
-  check(chain->GetBuffer(1, IID_PPV_ARGS(&lastFrame)));
+  if (leanActive)
+    lastFrame = leanStill();
+  else
+    check(chain->GetBuffer(1, IID_PPV_ARGS(&lastFrame)));
   capture(lastFrame.Get());
+  lastFrame.Reset();
+  leanDropStill();
   posterPending = freezePending = false;
   paused = manual;
   if (probe) {
@@ -653,6 +725,10 @@ BOOL CALLBACK subtractWindow(HWND w, LPARAM arg) {
 }
 
 void startClock() {
+  if (leanActive) {
+    leanSchedule();
+    return;
+  }
   LARGE_INTEGER due;
   due.QuadPart = -10000;
   if (!SetWaitableTimer(ticks, &due, cadence, nullptr, nullptr, FALSE))
@@ -969,24 +1045,38 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
       }
       return TRUE;
     case Media:
-      if (a != generation || !engine)
+      if (a != generation || !playerOpen())
         return 0;
+      if (b == LeanFailed) {
+        leanFailedFor = source;
+        closePlayer();
+        openPlayer();
+        return 0;
+      }
+      if (b == LeanReady && ready) {
+        if (!leanPaused())
+          startClock();
+        return 0;
+      }
       if (b == MF_MEDIA_ENGINE_EVENT_ERROR) {
         ComPtr<IMFMediaError> e;
         engine->GetError(&e);
         throw(e ? e->GetExtendedErrorCode() : E_FAIL);
       }
       if (!ready) {
-        setupOutput();
+        if (leanActive)
+          createOutput(leanWidth, leanHeight, true);
+        else
+          setupOutput();
         ready = true;
-        if (position > 0) {
+        if (position > 0 && !leanActive) {
           seekStarted = GetTickCount64();
           check(engine->SetCurrentTime(position));
         }
-        check(engine->Play());
+        check(playerPlay());
         startClock();
         if (covered && !freezePending && !posterPending) {
-          engine->Pause();
+          playerPause();
           CancelWaitableTimer(ticks);
           SetTimer(w, Unload, 2000, nullptr);
         }
@@ -1111,6 +1201,9 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
     if (!controller)
       throw E_HANDLE;
     ticks = CreateWaitableTimerEx(nullptr, nullptr, 0x2, TIMER_ALL_ACCESS);
+    // Keeps frame presentation on time while Litely is a background process.
+    DWORD task = 0;
+    AvSetMmThreadCharacteristicsW(L"Playback", &task);
     if (!ticks)
       ticks = CreateWaitableTimer(nullptr, FALSE, nullptr);
     if (!ticks)
@@ -1205,13 +1298,15 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           pacingStart = Clock::now();
           initialCPU = cpuSeconds();
           firstFrames = frames;
-          report << L"pipeline legacy" << std::endl;
+          report << (leanActive ? L"pipeline lean" : L"pipeline legacy") << std::endl;
+          leanLate = 0;
+          leanWorstLate = 0;
         }
         if (phase == 0 && sampleStart &&
             GetTickCount64() - sampleStart >= sampleMs) {
           report << L"pacing frames " << frames - firstFrames << L" expected "
                  << std::llround(millisecondsSince(pacingStart) / 1000 * frameRate)
-                 << L" late 0 worst 0 ms" << std::endl;
+                 << L" late " << leanLate << L" worst " << leanWorstLate << L" ms" << std::endl;
           report << L"sample wall seconds "
                  << (GetTickCount64() - sampleStart) / 1000.0
                  << L" process CPU seconds " << cpuSeconds() - initialCPU
