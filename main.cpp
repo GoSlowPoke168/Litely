@@ -64,6 +64,7 @@ ComPtr<IMFMediaEngine> engine;
 ComPtr<IDXGISwapChain1> chain;
 ComPtr<IDCompositionDevice> compositor;
 UINT width = 0, height = 0, cadence = 16;
+double frameRate = 60;
 struct Display {
   RECT rect, work;
   HWND window{};
@@ -165,9 +166,15 @@ public:
     return S_OK;
   }
 };
-void openPlayer() {
-  if (engine || source.empty())
-    return;
+fs::path playFile() { return source; }
+bool playerOpen() { return engine != nullptr; }
+HRESULT playerPlay() { return engine->Play(); }
+HRESULT playerPause() { return engine->Pause(); }
+bool playerPaused() { return engine->IsPaused() != FALSE; }
+double playerTime() { return engine->GetCurrentTime(); }
+double playerDuration() { return engine->GetDuration(); }
+void playerSeek(double seconds) { check(engine->SetCurrentTime(seconds)); }
+void createDevice() {
   if (!mediaStarted) {
     check(MFStartup(MF_VERSION));
     mediaStarted = true;
@@ -183,6 +190,11 @@ void openPlayer() {
   UINT token;
   check(MFCreateDXGIDeviceManager(&token, &manager));
   check(manager->ResetDevice(device.Get(), token));
+}
+void openPlayer() {
+  if (playerOpen() || source.empty())
+    return;
+  createDevice();
   ComPtr<IMFAttributes> attr;
   check(MFCreateAttributes(&attr, 4));
   auto events = Make<Events>();
@@ -198,7 +210,7 @@ void openPlayer() {
   check(engine->SetLoop(TRUE));
   DWORD chars = 32768;
   wchar_t url[32768];
-  check(UrlCreateFromPathW(source.c_str(), url, &chars, 0));
+  check(UrlCreateFromPathW(playFile().c_str(), url, &chars, 0));
   BSTR b = SysAllocString(url);
   HRESULT result = engine->SetSource(b);
   SysFreeString(b);
@@ -248,11 +260,9 @@ HWND desktop() {
     throw E_HANDLE;
   return worker;
 }
-void setupOutput() {
-  DWORD nativeW, nativeH;
-  check(engine->GetNativeVideoSize(&nativeW, &nativeH));
-  width = nativeW;
-  height = nativeH;
+void createOutput(UINT videoWidth, UINT videoHeight) {
+  width = videoWidth;
+  height = videoHeight;
   if (!width || !height)
     throw E_FAIL;
   UINT maxW = 0, maxH = 0;
@@ -319,9 +329,15 @@ void setupOutput() {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
   check(compositor->Commit());
+}
+void setupOutput() {
+  DWORD nativeW, nativeH;
+  check(engine->GetNativeVideoSize(&nativeW, &nativeH));
+  createOutput(nativeW, nativeH);
   // Use source cadence where available. Poll only while the wallpaper is
   // visible.
   cadence = 16;
+  frameRate = 60;
   ComPtr<IMFMediaEngineEx> ex;
   if (SUCCEEDED(engine.As(&ex))) {
     DWORD count = 0;
@@ -330,6 +346,7 @@ void setupOutput() {
       PROPVARIANT v{};
       if (SUCCEEDED(ex->GetStreamAttribute(i, MF_MT_FRAME_RATE, &v)) &&
           v.vt == VT_UI8 && v.uhVal.HighPart && v.uhVal.LowPart) {
+        frameRate = double(v.uhVal.HighPart) / v.uhVal.LowPart;
         cadence = std::clamp(UINT(1000.0 * v.uhVal.LowPart / v.uhVal.HighPart),
                              1u, 1000u);
         PropVariantClear(&v);
@@ -443,6 +460,10 @@ void draw() {
   check(engine->TransferVideoFrame(texture.Get(), nullptr, &dest, &black));
   if (posterPending) {
     capture(texture.Get());
+    if (probe) {
+      auto first = snapshot;
+      CopyFileW(snapshot.c_str(), first.replace_extension(L".first.bmp").c_str(), FALSE);
+    }
     applyPoster(true, snapshot);
     posterPending = false;
   }
@@ -534,7 +555,7 @@ void startClock();
 void freeze(bool manual = true) {
   if (applyingPause)return;
   KillTimer(controller, Unload);
-  if (manual && covered && !engine && !posterPending && fs::exists(snapshot)) {
+  if (manual && covered && !playerOpen() && !posterPending && fs::exists(snapshot)) {
     paused = true;
     finishPause();
     return;
@@ -544,12 +565,12 @@ void freeze(bool manual = true) {
     if (!ready)
       openPlayer();
     else {
-      check(engine->Play());
+      check(playerPlay());
       startClock();
     }
     return;
   }
-  check(engine->Pause());
+  check(playerPause());
   CancelWaitableTimer(ticks);
   ComPtr<ID3D11Texture2D> lastFrame;
   check(chain->GetBuffer(1, IID_PPV_ARGS(&lastFrame)));
@@ -638,7 +659,7 @@ void startClock() {
     throw E_FAIL;
 }
 void resumePlayer() {
-  check(engine->Play());
+  check(playerPlay());
   startClock();
   parked = false;
 }
@@ -679,12 +700,12 @@ void visibility() {
       ShowWindow(d.window, d.visible ? SW_SHOWNOACTIVATE : SW_HIDE);
   }
   if (!any) {
-    if (posterPending && !engine)
+    if (posterPending && !playerOpen())
       openPlayer();
     if (!covered) {
       covered = true;
-      if (engine && !posterPending && !parked) {
-        engine->Pause();
+      if (playerOpen() && !posterPending && !parked) {
+        playerPause();
         CancelWaitableTimer(ticks);
         SetTimer(controller, Unload, 2000, nullptr);
       }
@@ -695,7 +716,7 @@ void visibility() {
   KillTimer(controller, Unload);
   bool resume = covered || parked;
   covered = false;
-  if (!engine)
+  if (!playerOpen())
     openPlayer();
   else if (resume && ready)
     resumePlayer();
@@ -858,7 +879,7 @@ void playbackTick() {
   else if (freezePending && frames != prev)
     freeze();
   else if (preparing && !posterPending && covered) {
-    check(engine->Pause());
+    check(playerPause());
     CancelWaitableTimer(ticks);
     SetTimer(controller, Unload, 2000, nullptr);
   }
@@ -1136,6 +1157,10 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
     ULONGLONG sampleStart = 0;
     double initialCPU = 0;
     unsigned firstFrames = 0;
+    wchar_t secondsText[16]{};
+    GetEnvironmentVariableW(L"LITELY_PROBE_SECONDS", secondsText, 16);
+    const ULONGLONG sampleMs = 1000ull * std::max(4, _wtoi(secondsText));
+    Clock::time_point pacingStart;
     while (running) {
       HANDLE waits[] = {ticks, historyChanged};
       DWORD wait = MsgWaitForMultipleObjectsEx(
@@ -1177,17 +1202,22 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
                    << std::endl;
           }
           sampleStart = GetTickCount64();
+          pacingStart = Clock::now();
           initialCPU = cpuSeconds();
           firstFrames = frames;
+          report << L"pipeline legacy" << std::endl;
         }
         if (phase == 0 && sampleStart &&
-            GetTickCount64() - sampleStart >= 4000) {
+            GetTickCount64() - sampleStart >= sampleMs) {
+          report << L"pacing frames " << frames - firstFrames << L" expected "
+                 << std::llround(millisecondsSince(pacingStart) / 1000 * frameRate)
+                 << L" late 0 worst 0 ms" << std::endl;
           report << L"sample wall seconds "
                  << (GetTickCount64() - sampleStart) / 1000.0
                  << L" process CPU seconds " << cpuSeconds() - initialCPU
                  << L" frames " << frames - firstFrames << std::endl;
           report << L"frames " << frames << L" position "
-                 << engine->GetCurrentTime() << L" output " << width << L"x"
+                 << playerTime() << L" output " << width << L"x"
                  << height << std::endl;
           if (posterPending || !fs::exists(snapshot))
             throw E_FAIL;
@@ -1214,7 +1244,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           report << L"paused pixels exactly match the last submitted frame"
                  << std::endl;
           memory(L"paused");
-          if (!engine || !engine->IsPaused() || !parked ||
+          if (!playerOpen() || !playerPaused() || !parked ||
               !fs::exists(snapshot))
             throw E_FAIL;
           report << L"paused: renderer ready, playback clock stopped"
@@ -1238,19 +1268,18 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           phase = 2;
         }
         if (phase == 2 && frames >= firstFrames + 30) {
-          report << L"resumed at " << engine->GetCurrentTime() << std::endl;
-          check(engine->SetCurrentTime(
-              std::max(0.0, engine->GetDuration() - 0.6)));
+          report << L"resumed at " << playerTime() << std::endl;
+          playerSeek(std::max(0.0, playerDuration() - 0.6));
           phase = 3;
         }
         if (phase == 3 &&
-            engine->GetCurrentTime() > engine->GetDuration() - 0.8)
+            playerTime() > playerDuration() - 0.8)
           phase = 4;
-        if (phase == 4 && engine->GetCurrentTime() < 0.5) {
+        if (phase == 4 && playerTime() < 0.5) {
           report << L"loop restarted" << std::endl;
           running = false;
         }
-        if (GetTickCount64() - start > 30000)
+        if (GetTickCount64() - start > 26000 + sampleMs)
           throw HRESULT_FROM_WIN32(WAIT_TIMEOUT);
       }
     }
