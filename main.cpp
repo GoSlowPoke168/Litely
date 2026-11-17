@@ -57,6 +57,8 @@ constexpr UINT SmoothResume = 4, MaximumSavings = 5;
 bool maximumSavings = false, batteryRule = false, batteryOverride = false;
 HPOWERNOTIFY acHook, saverHook;
 void updateBattery();
+// Hands idle pages back to Windows; they reload on demand.
+void trimMemory() { SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); }
 void updateBatteryCopy();
 void updatePlayFile();
 extern int testPower;
@@ -1423,6 +1425,8 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           }
           sampleStart = GetTickCount64();
           pacingStart = Clock::now();
+          if (GetEnvironmentVariableW(L"LITELY_PROBE_TRIM", nullptr, 0))
+            trimMemory();
           initialCPU = cpuSeconds();
           firstFrames = frames;
           report << (directActive ? L"pipeline direct" : leanActive ? L"pipeline lean" : L"pipeline legacy") << std::endl;

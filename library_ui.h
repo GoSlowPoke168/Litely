@@ -829,6 +829,8 @@ void loadPreview() {
   updateActionLabel();
   InvalidateRect(libraryWindow, nullptr, FALSE);
 }
+void placeList();
+void scrollReveal(int index,bool animate);
 void fillList(const fs::path &preferred = source) {
   SendMessage(libraryList,WM_SETREDRAW,FALSE,0);
   SendMessage(libraryList, LB_RESETCONTENT, 0, 0);
@@ -845,6 +847,8 @@ void fillList(const fs::path &preferred = source) {
       selected = (int)i;
   }
   SendMessage(libraryList, LB_SETCURSEL, selected, 0);
+  placeList();
+  scrollReveal(selected,false);
   SendMessage(libraryList,WM_SETREDRAW,TRUE,0);
   RedrawWindow(libraryList,nullptr,nullptr,RDW_INVALIDATE|RDW_FRAME);
   loadPreview();
@@ -945,9 +949,98 @@ void setUiPage(bool settings) {
   for(int id:{103,104,105,106,111})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
   InvalidateRect(libraryWindow, nullptr, FALSE);
 }
+// The list box is as tall as its rows and slides inside this viewport, so it scrolls by pixels, not rows.
+HWND libraryScroll=nullptr;
+double scrollOffset=0,scrollTarget=0;
+bool scrollHot=false,scrollDragging=false;
+int scrollGrab=0;
+int scrollView(){RECT r;GetClientRect(libraryScroll,&r);return r.bottom;}
+int scrollContent(){return (int)SendMessage(libraryList,LB_GETCOUNT,0,0)*px(72);}
+int scrollLimit(){return std::max(0,scrollContent()-scrollView());}
+RECT scrollThumb(){
+  RECT r;GetClientRect(libraryScroll,&r);
+  int limit=scrollLimit();
+  if(!limit)return {};
+  int tall=std::max(px(28),(int)((double)r.bottom*r.bottom/scrollContent()));
+  int top=(int)((r.bottom-tall)*scrollOffset/limit);
+  return {r.right-px(7),top+px(2),r.right-px(3),top+tall-px(2)};
+}
+void placeList(){
+  if(!libraryScroll)return;
+  RECT r;GetClientRect(libraryScroll,&r);
+  int limit=scrollLimit();
+  scrollTarget=std::clamp(scrollTarget,0.,(double)limit);
+  scrollOffset=std::clamp(scrollOffset,0.,(double)limit);
+  SetWindowPos(libraryList,nullptr,0,-(int)std::lround(scrollOffset),r.right-(limit?px(10):0),std::max((int)r.bottom,scrollContent()),SWP_NOZORDER|SWP_NOACTIVATE);
+  RECT strip{r.right-px(10),0,r.right,r.bottom};
+  InvalidateRect(libraryScroll,&strip,TRUE);
+}
+void scrollTo(double target,bool animate){
+  scrollTarget=std::clamp(target,0.,(double)scrollLimit());
+  if(animate)SetTimer(libraryScroll,1,10,nullptr);
+  else{scrollOffset=scrollTarget;placeList();}
+}
+void scrollReveal(int index,bool animate){
+  if(index<0)return;
+  double top=index*(double)px(72),target=scrollTarget;
+  if(top<target)target=top;
+  else if(top+px(72)>target+scrollView())target=top+px(72)-scrollView();
+  if(target!=scrollTarget)scrollTo(target,animate);
+}
+LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
+  switch(m){
+  case WM_COMMAND:
+    if(LOWORD(a)==100 && HIWORD(a)==LBN_SELCHANGE)scrollReveal((int)SendMessage(libraryList,LB_GETCURSEL,0,0),true);
+    [[fallthrough]];
+  case WM_DRAWITEM:case WM_MEASUREITEM:case WM_CTLCOLORLISTBOX:
+    return SendMessage(GetParent(w),m,a,b);
+  case WM_SETFOCUS:SetFocus(libraryList);return 0;
+  case WM_SIZE:placeList();return 0;
+  case WM_ERASEBKGND:{RECT r;GetClientRect(w,&r);panel((HDC)a,r,cWindow);return 1;}
+  case WM_PAINT:{
+    PAINTSTRUCT ps;HDC dc=BeginPaint(w,&ps);
+    RECT thumb=scrollThumb();
+    if(thumb.bottom>thumb.top)
+      fillRound(dc,{dip(thumb.left),dip(thumb.top),dip(thumb.right),dip(thumb.bottom)},scrollHot||scrollDragging?cMuted:cLine,2);
+    EndPaint(w,&ps);return 0;
+  }
+  case WM_MOUSEWHEEL:
+    scrollTo(scrollTarget-GET_WHEEL_DELTA_WPARAM(a)/120.*px(96),true);return 0;
+  case WM_TIMER:{
+    double gap=scrollTarget-scrollOffset;
+    if(std::abs(gap)<.75){scrollOffset=scrollTarget;KillTimer(w,1);}
+    else scrollOffset+=gap*.3;
+    placeList();UpdateWindow(libraryList);return 0;
+  }
+  case WM_LBUTTONDOWN:{
+    RECT thumb=scrollThumb();int y=GET_Y_LPARAM(b);
+    if(thumb.bottom<=thumb.top)return 0;
+    if(y<thumb.top)scrollTo(scrollTarget-scrollView(),true);
+    else if(y>=thumb.bottom)scrollTo(scrollTarget+scrollView(),true);
+    else{scrollDragging=true;scrollGrab=y-thumb.top;SetCapture(w);}
+    return 0;
+  }
+  case WM_MOUSEMOVE:{
+    if(scrollDragging){
+      RECT thumb=scrollThumb();int span=scrollView()-(thumb.bottom-thumb.top+px(4));
+      KillTimer(w,1);
+      if(span>0)scrollTo((GET_Y_LPARAM(b)-scrollGrab)*(double)scrollLimit()/span,false);
+    }else if(!scrollHot){
+      scrollHot=true;
+      TRACKMOUSEEVENT leave{sizeof leave,TME_LEAVE,w,0};TrackMouseEvent(&leave);
+      InvalidateRect(w,nullptr,TRUE);
+    }
+    return 0;
+  }
+  case WM_LBUTTONUP:if(scrollDragging){scrollDragging=false;ReleaseCapture();InvalidateRect(w,nullptr,TRUE);}return 0;
+  case WM_MOUSELEAVE:scrollHot=false;InvalidateRect(w,nullptr,TRUE);return 0;
+  }
+  return DefWindowProc(w,m,a,b);
+}
 // Keep the native button's input, radio grouping and accessibility behavior.
 LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR){
   int id=GetDlgCtrlID(w);
+  if(id==100 && m==WM_MOUSEWHEEL)return SendMessage(libraryScroll,m,a,b);
   if(m==WM_LBUTTONDOWN)SendMessage(GetParent(w),WM_CHANGEUISTATE,MAKEWPARAM(UIS_SET,UISF_HIDEFOCUS),0);
   if(id==100 && (m==WM_MOUSEMOVE || m==WM_MOUSELEAVE)){
     int next=-1;
@@ -1003,9 +1096,12 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         SendMessage(c, WM_SETFONT, (WPARAM)uiFont, TRUE);
         return c;
       };
-      libraryList = control(
-          L"LISTBOX", L"", LBS_NOTIFY | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS, 100);
-      SetWindowTheme(libraryList,L"DarkMode_Explorer",nullptr);
+      libraryScroll = CreateWindowEx(WS_EX_CONTROLPARENT, L"LitelyScroll", L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                                     0, 0, 0, 0, w, nullptr, instance, nullptr);
+      libraryList = CreateWindowEx(0, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
+                                   LBS_OWNERDRAWFIXED | LBS_HASSTRINGS, 0, 0, 0, 0, libraryScroll, (HMENU)(INT_PTR)100, instance, nullptr);
+      SetWindowSubclass(libraryList, uiButtonProc, 1, 0);
+      SendMessage(libraryList, WM_SETFONT, (WPARAM)uiFont, TRUE);
       control(L"BUTTON", L"Add MP4", BS_OWNERDRAW, 101);
       control(L"BUTTON", L"Set wallpaper", BS_OWNERDRAW, 102);
       control(L"BUTTON", L"Smooth resume", BS_AUTORADIOBUTTON | WS_GROUP, 103);
@@ -1017,7 +1113,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       control(L"BUTTON", L"Settings", BS_OWNERDRAW, 106);
       control(L"BUTTON", L"Tray menu", BS_OWNERDRAW, 108);
       control(L"BUTTON", L"Library", BS_OWNERDRAW, 107);
-      SendMessage(libraryList,LB_SETITEMHEIGHT,0,px(72));
+      SendMessage(libraryList,LB_SETITEMHEIGHT,0,px(72));placeList();
       SetTimer(w, 1, 1000, nullptr);
       return 0;
     }
@@ -1030,7 +1126,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if(batch)batch=DeferWindowPos(batch,child,nullptr,px(x),px(y),px(span),px(std::max(0,tall)),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS);
       };
       int hero=heroBottom(cw,ch);
-      move(libraryList,12,122,212,ch-226);
+      move(libraryScroll,12,122,212,ch-226);
       move(GetDlgItem(w,101),124,80,100,30);
       move(GetDlgItem(w,106),12,ch-92,212,36);
       move(GetDlgItem(w,108),12,ch-50,212,36);
@@ -1049,7 +1145,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
     }
     case WM_DPICHANGED:{
       libraryDpi=HIWORD(a);
-      SendMessage(libraryList,LB_SETITEMHEIGHT,0,px(72));
+      SendMessage(libraryList,LB_SETITEMHEIGHT,0,px(72));placeList();
       RECT suggested=*(RECT*)b;
       SetWindowPos(w,nullptr,suggested.left,suggested.top,suggested.right-suggested.left,suggested.bottom-suggested.top,SWP_NOZORDER|SWP_NOACTIVATE);
       return 0;
@@ -1390,7 +1486,10 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       uiFont = nullptr;
       uiBrush = nullptr;
       libraryWindow = nullptr;
+      libraryScroll = nullptr;
+      scrollOffset = scrollTarget = 0;
       Gdiplus::GdiplusShutdown(graphicsToken);
+      trimMemory();
       return 0;
     }
   } catch (HRESULT error) {
@@ -1450,6 +1549,14 @@ void openLibrary(bool settings = false) {
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   wc.hIcon = LoadIcon(instance, MAKEINTRESOURCE(IDI_LITELY));
   RegisterClass(&wc);
+  {
+    WNDCLASS scroller{};
+    scroller.hInstance = instance;
+    scroller.lpfnWndProc = scrollProc;
+    scroller.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    scroller.lpszClassName = L"LitelyScroll";
+    RegisterClass(&scroller);
+  }
   libraryDpi=GetDpiForSystem();
   RECT work{};SystemParametersInfo(SPI_GETWORKAREA,0,&work,0);
   libraryWindow =
