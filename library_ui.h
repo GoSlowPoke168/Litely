@@ -110,9 +110,13 @@ std::vector<std::unique_ptr<Gdiplus::Bitmap>> rowImages;
 RECT titleBox{};
 bool titleHot=false;
 std::wstring cpuValue=L"—",ramValue=L"—",gpuValue=L"—";
-int hoveredRow = -1;
+int hoveredRow = -1, selectedRow = -1;
+// The Library panel's width in layout units; it can be dragged wider or fill the window.
+int sideWidth = 236, sideLast = 236;
+bool sideFull = false, mainOff = false;
+bool gridMode() { return sideWidth >= 400; }
 int heroBottom(int widthDip, int heightDip) {
-  return std::min(heightDip - 212, 92 + MulDiv(widthDip - 292, 100, 197));
+  return std::min(heightDip - 212, 92 + MulDiv(widthDip - sideWidth - 56, 100, 197));
 }
 std::vector<std::wstring> videoDetails;
 std::wstring cleanName(std::wstring name){
@@ -231,7 +235,7 @@ void addLibrary(const fs::path &path) {
   libraryFiles.push_back(canonical);
 }
 int selectedIndex() {
-  return (int)SendMessage(libraryList, LB_GETCURSEL, 0, 0);
+  return selectedRow < (int)libraryFiles.size() ? selectedRow : -1;
 }
 std::unique_ptr<Gdiplus::Bitmap> readArtwork(const fs::path &path,bool thumbnail=false){
   Gdiplus::Bitmap file(path.c_str());
@@ -834,13 +838,17 @@ void scrollReveal(int index,bool animate);
 // Finished row images, so scrolling copies pixels instead of redrawing rows.
 struct RowImage{HBITMAP bitmap=nullptr;unsigned key=0;int wide=0,tall=0;};
 std::vector<RowImage> rowCache;
+std::vector<std::unique_ptr<Gdiplus::Bitmap>> tileImages;
 void clearRowCache(){
   for(auto &row:rowCache)if(row.bitmap)DeleteObject(row.bitmap);
   rowCache.clear();
+  tileImages.clear();
+}
+void dropRow(int i){
+  if(i>=0 && i<(int)rowCache.size())rowCache[i].key=0;
+  if(i>=0 && i<(int)tileImages.size())tileImages[i].reset();
 }
 void fillList(const fs::path &preferred = source) {
-  SendMessage(libraryList,WM_SETREDRAW,FALSE,0);
-  SendMessage(libraryList, LB_RESETCONTENT, 0, 0);
   clearRowCache();
   rowImages.clear();
   videoDetails.clear();
@@ -849,16 +857,13 @@ void fillList(const fs::path &preferred = source) {
     videoDetails.push_back(readVideoDetails(libraryFiles[i]));
     auto image=readArtwork(artworkPath(libraryFiles[i]),true);
     rowImages.push_back(std::move(image));
-    SendMessage(libraryList, LB_ADDSTRING, 0,
-                (LPARAM)displayName(libraryFiles[i]).c_str());
     if (!_wcsicmp(libraryFiles[i].c_str(), preferred.c_str()))
       selected = (int)i;
   }
-  SendMessage(libraryList, LB_SETCURSEL, selected, 0);
+  selectedRow=libraryFiles.empty()?-1:selected;
   placeList();
-  scrollReveal(selected,false);
-  SendMessage(libraryList,WM_SETREDRAW,TRUE,0);
-  RedrawWindow(libraryList,nullptr,nullptr,RDW_INVALIDATE|RDW_FRAME);
+  scrollReveal(selectedRow,false);
+  if(libraryList)InvalidateRect(libraryList,nullptr,FALSE);
   loadPreview();
 }
 std::wstring savingsText;
@@ -939,11 +944,14 @@ void updateActionLabel(){
   HWND remove=GetDlgItem(libraryWindow,109);
   if(!!IsWindowEnabled(remove)!=(i>=0))EnableWindow(remove,i>=0);
 }
+void applySide(int wanted,bool full);
 void setUiPage(bool settings) {
+  bool restore=settings && sideFull;
+  if(restore){sideFull=mainOff=false;sideWidth=sideLast;}
   settingsPage = settings;
   titleHot = false;
-  for (int id : {102,109})
-    ShowWindow(GetDlgItem(libraryWindow, id), settings ? SW_HIDE : SW_SHOW);
+  ShowWindow(GetDlgItem(libraryWindow, 102), !settings && (!mainOff || sideFull) ? SW_SHOW : SW_HIDE);
+  ShowWindow(GetDlgItem(libraryWindow, 109), !settings && !mainOff ? SW_SHOW : SW_HIDE);
   for (int id : {103, 104, 105, 107, 111})
     ShowWindow(GetDlgItem(libraryWindow, id), settings ? SW_SHOW : SW_HIDE);
   SendMessage(GetDlgItem(libraryWindow, 103), BM_SETCHECK,
@@ -956,16 +964,30 @@ void setUiPage(bool settings) {
               batteryFps ? BST_CHECKED : BST_UNCHECKED, 0);
   for(int id:{103,104,105,106,111})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
   InvalidateRect(libraryWindow, nullptr, FALSE);
+  if(restore){RECT client;GetClientRect(libraryWindow,&client);SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));}
 }
-// The list box is as tall as its rows and slides inside this viewport, so it scrolls by pixels, not rows.
-HWND libraryScroll=nullptr;
+// The Library's own list: rows while narrow, tiles once wide, scrolled by pixels.
+HWND libraryScroll=nullptr,tileMenu=nullptr;
 double scrollOffset=0,scrollTarget=0;
 Clock::time_point scrollTick;
-bool scrollMoving=false;
-bool scrollHot=false,scrollDragging=false;
-int scrollGrab=0;
+bool scrollMoving=false,scrollHot=false,scrollDragging=false,hotMore=false;
+int scrollGrab=0,menuHot=-1;
+bool playbackBusy(){
+  static const bool forced=GetEnvironmentVariableW(L"LITELY_TEST_BUSY",nullptr,0)!=0;
+  return forced || applyingPause || freezePending || (!paused && !batteryOverride && !covered && !source.empty() && !presented);
+}
+struct Cells{int cols,wide,tall,strip;};
+Cells cells(){
+  RECT r;GetClientRect(libraryScroll,&r);
+  if(!gridMode()){
+    int strip=(int)libraryFiles.size()*px(72)>r.bottom?px(10):0;
+    return {1,std::max(1,(int)r.right-strip),px(72),strip};
+  }
+  int usable=std::max(1,(int)r.right-px(10)),cols=std::max(1,usable/px(176)),wide=usable/cols;
+  return {cols,wide,px((dip(wide)-16)*9/16+66),px(10)};
+}
 int scrollView(){RECT r;GetClientRect(libraryScroll,&r);return r.bottom;}
-int scrollContent(){return (int)SendMessage(libraryList,LB_GETCOUNT,0,0)*px(72);}
+int scrollContent(){auto c=cells();return ((int)libraryFiles.size()+c.cols-1)/c.cols*c.tall;}
 int scrollLimit(){return std::max(0,scrollContent()-scrollView());}
 RECT scrollThumb(){
   RECT r;GetClientRect(libraryScroll,&r);
@@ -977,13 +999,10 @@ RECT scrollThumb(){
 }
 void placeList(){
   if(!libraryScroll)return;
-  RECT r;GetClientRect(libraryScroll,&r);
   int limit=scrollLimit();
   scrollTarget=std::clamp(scrollTarget,0.,(double)limit);
   scrollOffset=std::clamp(scrollOffset,0.,(double)limit);
-  SetWindowPos(libraryList,nullptr,0,-(int)std::lround(scrollOffset),r.right-(limit?px(10):0),std::max((int)r.bottom,scrollContent()),SWP_NOZORDER|SWP_NOACTIVATE);
-  RECT strip{r.right-px(10),0,r.right,r.bottom};
-  InvalidateRect(libraryScroll,&strip,FALSE);
+  InvalidateRect(libraryScroll,nullptr,FALSE);
 }
 void scrollTo(double target,bool animate){
   scrollTarget=std::clamp(target,0.,(double)scrollLimit());
@@ -991,37 +1010,192 @@ void scrollTo(double target,bool animate){
   else{scrollOffset=scrollTarget;placeList();}
 }
 void scrollReveal(int index,bool animate){
-  if(index<0)return;
-  double top=index*(double)px(72),target=scrollTarget;
+  if(index<0 || !libraryScroll)return;
+  auto c=cells();
+  double top=index/c.cols*(double)c.tall,target=scrollTarget;
   if(top<target)target=top;
-  else if(top+px(72)>target+scrollView())target=top+px(72)-scrollView();
+  else if(top+c.tall>target+scrollView())target=top+c.tall-scrollView();
   if(target!=scrollTarget)scrollTo(target,animate);
 }
-LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
+RECT cellRect(int i){
+  auto c=cells();int x=i%c.cols*c.wide,y=i/c.cols*c.tall-(int)std::lround(scrollOffset);
+  return {x,y,x+c.wide,y+c.tall};
+}
+int cellAt(POINT p){
+  auto c=cells();
+  if(p.x<0 || p.x>=c.cols*c.wide || p.y<0)return -1;
+  int i=(int)((p.y+std::lround(scrollOffset))/c.tall)*c.cols+p.x/c.wide;
+  return i<(int)libraryFiles.size()?i:-1;
+}
+RECT moreRect(int i){
+  RECT cell=cellRect(i);
+  return {cell.right-px(42),cell.top+px(14),cell.right-px(14),cell.top+px(42)};
+}
+void selectRow(int i,bool notify){
+  if(i<0 || i>=(int)libraryFiles.size())return;
+  selectedRow=i;
+  scrollReveal(i,true);
+  InvalidateRect(libraryScroll,nullptr,FALSE);
+  if(notify)SendMessage(GetParent(libraryScroll),WM_COMMAND,MAKEWPARAM(100,LBN_SELCHANGE),(LPARAM)libraryScroll);
+}
+std::unique_ptr<Gdiplus::Bitmap> readTile(const fs::path &path){
+  Gdiplus::Bitmap file(path.c_str());
+  if(file.GetLastStatus()!=Gdiplus::Ok)return {};
+  auto tile=std::make_unique<Gdiplus::Bitmap>(480,270,PixelFormat32bppPARGB);
+  Gdiplus::Graphics g(tile.get());
+  float sw=(float)file.GetWidth(),sh=(float)file.GetHeight(),scale=std::min(sw/480,sh/270);
+  g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+  if(g.DrawImage(&file,Gdiplus::RectF(0,0,480,270),(sw-480*scale)/2,(sh-270*scale)/2,480*scale,270*scale,Gdiplus::UnitPixel)!=Gdiplus::Ok)return {};
+  return tile;
+}
+void drawCell(HDC buffer,RECT r,int i,bool selected,bool hot,bool more,bool focus,bool grid){
+  if(!grid){
+  fillRect(buffer,r,cSidebar);
+  RECT card{r.left+2,r.top+2,r.right-2,r.bottom-2};
+  COLORREF fill=selected?cSelected:hot?cHover:cSidebar;
+  if(selected){fillRound(buffer,card,cSelectedLine,8);InflateRect(&card,-1,-1);}
+  if(selected || hot)fillRound(buffer,card,fill,7);
+  RECT thumb{r.left+12,r.top+14,r.left+65,r.top+58};
+  if(i<(int)rowImages.size() && rowImages[i] && rowImages[i]->GetLastStatus()==Gdiplus::Ok)
+    drawCover(buffer,rowImages[i].get(),thumb);
+  else{fillRound(buffer,thumb,cRaised,5);paintIcon(buffer,L"",thumb,16,cMuted);}
+  roundCorners(buffer,thumb,5,fill);
+  paintText(buffer,displayName(libraryFiles[i]),{r.left+76,r.top+15,r.right-8,r.top+34},13,cText,FW_SEMIBOLD);
+  bool active=!_wcsicmp(libraryFiles[i].c_str(),source.c_str());
+  auto detail=active?(paused||batteryOverride?L"On desktop · paused":L"On desktop"):videoDetails[i];
+  paintText(buffer,detail,{r.left+76,r.top+37,r.right-8,r.bottom-8},12,active?cAccent:cMuted);
+  if(focus)focusRing(buffer,{r.left+2,r.top+2,r.right-2,r.bottom-2},8);
+    return;
+  }
+  fillRect(buffer,r,cSidebar);
+  RECT card{r.left+2,r.top+2,r.right-2,r.bottom-2};
+  COLORREF fill=selected?cSelected:hot?cHover:cSidebar;
+  if(selected){fillRound(buffer,card,cSelectedLine,10);InflateRect(&card,-1,-1);}
+  if(selected || hot)fillRound(buffer,card,fill,9);
+  RECT thumb{r.left+8,r.top+8,r.right-8,r.top+8+(r.right-r.left-16)*9/16};
+  if(tileImages[i] && tileImages[i]->GetLastStatus()==Gdiplus::Ok)drawCover(buffer,tileImages[i].get(),thumb);
+  else{fillRound(buffer,thumb,cRaised,7);paintIcon(buffer,L"",thumb,22,cMuted);}
+  roundCorners(buffer,thumb,7,fill);
+  if(hot){
+    RECT dots{thumb.right-34,thumb.top+6,thumb.right-6,thumb.top+34};
+    fillRound(buffer,dots,more?cSelected:cWindow,7,more?255:215);
+    paintIcon(buffer,L"",dots,14,cText);
+  }
+  paintText(buffer,displayName(libraryFiles[i]),{r.left+10,thumb.bottom+9,r.right-10,thumb.bottom+28},13,cText,FW_SEMIBOLD);
+  bool active=!_wcsicmp(libraryFiles[i].c_str(),source.c_str());
+  auto detail=active?(paused||batteryOverride?L"On desktop · paused":L"On desktop"):videoDetails[i];
+  paintText(buffer,detail,{r.left+10,thumb.bottom+30,r.right-10,thumb.bottom+48},12,active?cAccent:cMuted);
+  if(focus)focusRing(buffer,{r.left+2,r.top+2,r.right-2,r.bottom-2},10);
+}
+const wchar_t *actionCaption();
+RECT menuItem(int k){int top=5+k*34+(k==2?9:0);return {5,top,171,top+34};}
+void closeTileMenu(){
+  if(!tileMenu)return;
+  HWND menuWindow=tileMenu;tileMenu=nullptr;menuHot=-1;
+  ReleaseCapture();DestroyWindow(menuWindow);
+  if(libraryScroll)InvalidateRect(libraryScroll,nullptr,FALSE);
+}
+LRESULT CALLBACK tileMenuProc(HWND w,UINT m,WPARAM a,LPARAM b){
+  auto itemAt=[&](LPARAM where){
+    POINT p{dip(GET_X_LPARAM(where)),dip(GET_Y_LPARAM(where))};
+    for(int k=0;k<3;k++){RECT item=menuItem(k);if(PtInRect(&item,p))return k;}
+    return -1;
+  };
   switch(m){
-  case WM_COMMAND:
-    if(LOWORD(a)==100 && HIWORD(a)==LBN_SELCHANGE)scrollReveal((int)SendMessage(libraryList,LB_GETCURSEL,0,0),true);
-    [[fallthrough]];
-  case WM_DRAWITEM:case WM_MEASUREITEM:case WM_CTLCOLORLISTBOX:
-    return SendMessage(GetParent(w),m,a,b);
-  case WM_SETFOCUS:SetFocus(libraryList);return 0;
-  case WM_SIZE:placeList();return 0;
   case WM_ERASEBKGND:return 1;
   case WM_PAINT:{
-    // Drawn off-screen and copied once, so the bar never shows a half-erased frame.
     PAINTSTRUCT ps;HDC dc=BeginPaint(w,&ps);
     RECT r;GetClientRect(w,&r);
     HDC buffer=CreateCompatibleDC(dc);HBITMAP bitmap=CreateCompatibleBitmap(dc,r.right,r.bottom);
     auto old=SelectObject(buffer,bitmap);
-    panel(buffer,r,cWindow);
+    panel(buffer,r,cLine);
+    RECT inner{1,1,r.right-1,r.bottom-1};panel(buffer,inner,cRaised);
+    for(int k=0;k<3;k++){
+      RECT item=menuItem(k);
+      if(k==menuHot)fillRound(buffer,item,cHover,6);
+      paintText(buffer,k==0?actionCaption():k==1?L"Rename":L"Remove",{item.left+11,item.top,item.right-8,item.bottom},13,
+                k==2?RGB(255,154,168):k==menuHot?cText:cSoft,FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
+    }
+    {UiDC mapping(buffer);panel(buffer,{11,77,165,78},cLine);}
+    BitBlt(dc,0,0,r.right,r.bottom,buffer,0,0,SRCCOPY);
+    SelectObject(buffer,old);DeleteObject(bitmap);DeleteDC(buffer);
+    EndPaint(w,&ps);return 0;
+  }
+  case WM_MOUSEMOVE:{int k=itemAt(b);if(k!=menuHot){menuHot=k;InvalidateRect(w,nullptr,FALSE);}return 0;}
+  case WM_LBUTTONDOWN:case WM_RBUTTONDOWN:{
+    RECT r;GetClientRect(w,&r);POINT p{GET_X_LPARAM(b),GET_Y_LPARAM(b)};
+    if(!PtInRect(&r,p))closeTileMenu();
+    return 0;
+  }
+  case WM_LBUTTONUP:{
+    int k=itemAt(b);
+    if(k<0)return 0;
+    closeTileMenu();
+    PostMessage(libraryWindow,WM_COMMAND,k==0?102:k==1?110:109,0);
+    return 0;
+  }
+  case WM_CAPTURECHANGED:if(tileMenu==w){tileMenu=nullptr;menuHot=-1;DestroyWindow(w);}return 0;
+  }
+  return DefWindowProc(w,m,a,b);
+}
+void openTileMenu(int i){
+  closeTileMenu();
+  selectRow(i,true);
+  RECT more=moreRect(i);POINT at{more.right,more.bottom+px(6)};
+  ClientToScreen(libraryScroll,&at);
+  tileMenu=CreateWindowEx(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_NOACTIVATE,L"LitelyMenu",L"",WS_POPUP,at.x-px(176),at.y,px(176),px(121),
+                          libraryWindow,nullptr,instance,nullptr);
+  if(!tileMenu)return;
+  int round=2;DwmSetWindowAttribute(tileMenu,33,&round,sizeof round);
+  ShowWindow(tileMenu,SW_SHOWNOACTIVATE);
+  SetCapture(tileMenu);
+}
+LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
+  switch(m){
+  case WM_GETDLGCODE:return DLGC_WANTARROWS;
+  case WM_SETFOCUS:case WM_KILLFOCUS:InvalidateRect(w,nullptr,FALSE);return 0;
+  case WM_SIZE:placeList();return 0;
+  case WM_ERASEBKGND:return 1;
+  case WM_PAINT:{
+    // Each cell is drawn once into its own image; a frame is those images copied into one off-screen page.
+    PAINTSTRUCT ps;HDC dc=BeginPaint(w,&ps);
+    RECT r;GetClientRect(w,&r);
+    HDC buffer=CreateCompatibleDC(dc),cell=CreateCompatibleDC(dc);
+    HBITMAP bitmap=CreateCompatibleBitmap(dc,r.right,r.bottom);
+    auto old=SelectObject(buffer,bitmap);
+    panel(buffer,r,cSidebar);
+    auto c=cells();bool grid=gridMode(),focus=GetFocus()==w && keyboardCues(w);
+    int count=(int)libraryFiles.size(),offset=(int)std::lround(scrollOffset);
+    if((int)rowCache.size()<count)rowCache.resize(count);
+    if((int)tileImages.size()<count)tileImages.resize(count);
+    for(int i=0;i<count;i++){
+      int x=i%c.cols*c.wide,y=i/c.cols*c.tall-offset;
+      if(y+c.tall<=0 || y>=r.bottom)continue;
+      bool chosen=i==selectedRow,hot=i==hoveredRow;
+      unsigned key=128|(chosen?1:0)|(hot?2:0)|(chosen && focus?4:0)|(!_wcsicmp(libraryFiles[i].c_str(),source.c_str())?8:0)|
+                   (paused||batteryOverride?16:0)|(grid?32:0)|(hot && hotMore?64:0);
+      auto &kept=rowCache[i];
+      if(!kept.bitmap || kept.key!=key || kept.wide!=c.wide || kept.tall!=c.tall){
+        if(grid && !tileImages[i])tileImages[i]=readTile(artworkPath(libraryFiles[i]));
+        if(kept.bitmap)DeleteObject(kept.bitmap);
+        kept={CreateCompatibleBitmap(dc,c.wide,c.tall),key,c.wide,c.tall};
+        auto before=SelectObject(cell,kept.bitmap);
+        drawCell(cell,{0,0,dip(c.wide),dip(c.tall)},i,chosen,hot,hot && hotMore,chosen && focus,grid);
+        SelectObject(cell,before);
+      }
+      auto before=SelectObject(cell,kept.bitmap);
+      BitBlt(buffer,x,y,c.wide,c.tall,cell,0,0,SRCCOPY);
+      SelectObject(cell,before);
+    }
     RECT thumb=scrollThumb();
     if(thumb.bottom>thumb.top)
       fillRound(buffer,{dip(thumb.left),dip(thumb.top),dip(thumb.right),dip(thumb.bottom)},scrollHot||scrollDragging?cMuted:cLine,2);
     BitBlt(dc,ps.rcPaint.left,ps.rcPaint.top,ps.rcPaint.right-ps.rcPaint.left,ps.rcPaint.bottom-ps.rcPaint.top,buffer,ps.rcPaint.left,ps.rcPaint.top,SRCCOPY);
-    SelectObject(buffer,old);DeleteObject(bitmap);DeleteDC(buffer);
+    SelectObject(buffer,old);DeleteObject(bitmap);DeleteDC(buffer);DeleteDC(cell);
     EndPaint(w,&ps);return 0;
   }
   case WM_MOUSEWHEEL:
+    closeTileMenu();
     scrollTo(scrollTarget-GET_WHEEL_DELTA_WPARAM(a)/120.*px(96),true);return 0;
   case WM_TIMER:{
     // Eased by elapsed time, so uneven timer ticks still move evenly.
@@ -1030,53 +1204,99 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     scrollTick=now;
     if(std::abs(gap)<.75){scrollOffset=scrollTarget;KillTimer(w,1);scrollMoving=false;}
     else scrollOffset+=gap*step;
-    placeList();UpdateWindow(libraryList);UpdateWindow(w);return 0;
+    InvalidateRect(w,nullptr,FALSE);UpdateWindow(w);return 0;
   }
   case WM_LBUTTONDOWN:{
-    RECT thumb=scrollThumb();int y=GET_Y_LPARAM(b);
-    if(thumb.bottom<=thumb.top)return 0;
-    if(y<thumb.top)scrollTo(scrollTarget-scrollView(),true);
-    else if(y>=thumb.bottom)scrollTo(scrollTarget+scrollView(),true);
-    else{scrollDragging=true;scrollGrab=y-thumb.top;SetCapture(w);}
+    SendMessage(w,WM_CHANGEUISTATE,MAKEWPARAM(UIS_SET,UISF_HIDEFOCUS),0);
+    SetFocus(w);
+    POINT p{GET_X_LPARAM(b),GET_Y_LPARAM(b)};RECT r;GetClientRect(w,&r);
+    RECT thumb=scrollThumb();
+    if(thumb.bottom>thumb.top && p.x>=r.right-px(10)){
+      if(p.y<thumb.top)scrollTo(scrollTarget-scrollView(),true);
+      else if(p.y>=thumb.bottom)scrollTo(scrollTarget+scrollView(),true);
+      else{scrollDragging=true;scrollGrab=p.y-thumb.top;SetCapture(w);}
+      return 0;
+    }
+    int hit=cellAt(p);
+    if(hit<0)return 0;
+    if(gridMode()){
+      RECT more=moreRect(hit);
+      if(PtInRect(&more,p)){openTileMenu(hit);return 0;}
+    }
+    selectRow(hit,true);
+    if(gridMode())SendMessage(GetParent(w),WM_COMMAND,MAKEWPARAM(100,9),(LPARAM)w);
+    return 0;
+  }
+  case WM_LBUTTONDBLCLK:{
+    POINT p{GET_X_LPARAM(b),GET_Y_LPARAM(b)};
+    if(!gridMode() && cellAt(p)>=0)SendMessage(GetParent(w),WM_COMMAND,MAKEWPARAM(100,LBN_DBLCLK),(LPARAM)w);
+    return 0;
+  }
+  case WM_KEYDOWN:{
+    int cols=cells().cols,count=(int)libraryFiles.size(),next=selectedRow;
+    if(a==VK_UP)next-=cols;else if(a==VK_DOWN)next+=cols;
+    else if(a==VK_LEFT && cols>1)next--;else if(a==VK_RIGHT && cols>1)next++;
+    else if(a==VK_HOME)next=0;else if(a==VK_END)next=count-1;
+    else if(a==VK_F2){SendMessage(GetParent(w),WM_COMMAND,110,0);return 0;}
+    else break;
+    SendMessage(w,WM_CHANGEUISTATE,MAKEWPARAM(UIS_CLEAR,UISF_HIDEFOCUS),0);
+    if(next>=0 && next<count && next!=selectedRow)selectRow(next,true);
     return 0;
   }
   case WM_MOUSEMOVE:{
+    POINT p{GET_X_LPARAM(b),GET_Y_LPARAM(b)};RECT r;GetClientRect(w,&r);
     if(scrollDragging){
       RECT thumb=scrollThumb();int span=scrollView()-(thumb.bottom-thumb.top+px(4));
-      KillTimer(w,1);
-      if(span>0)scrollTo((GET_Y_LPARAM(b)-scrollGrab)*(double)scrollLimit()/span,false);
-    }else if(!scrollHot){
-      scrollHot=true;
-      TRACKMOUSEEVENT leave{sizeof leave,TME_LEAVE,w,0};TrackMouseEvent(&leave);
-      InvalidateRect(w,nullptr,FALSE);
+      KillTimer(w,1);scrollMoving=false;
+      if(span>0)scrollTo((p.y-scrollGrab)*(double)scrollLimit()/span,false);
+      return 0;
     }
+    int hit=cellAt(p);bool more=false,bar=scrollLimit() && p.x>=r.right-px(10);
+    if(hit>=0 && gridMode()){RECT dots=moreRect(hit);more=PtInRect(&dots,p)!=0;}
+    if(hit!=hoveredRow || more!=hotMore || bar!=scrollHot){hoveredRow=hit;hotMore=more;scrollHot=bar;InvalidateRect(w,nullptr,FALSE);}
+    TRACKMOUSEEVENT leave{sizeof leave,TME_LEAVE,w,0};TrackMouseEvent(&leave);
     return 0;
   }
   case WM_LBUTTONUP:if(scrollDragging){scrollDragging=false;ReleaseCapture();InvalidateRect(w,nullptr,FALSE);}return 0;
-  case WM_MOUSELEAVE:scrollHot=false;InvalidateRect(w,nullptr,FALSE);return 0;
+  case WM_MOUSELEAVE:
+    if(!tileMenu){hoveredRow=-1;hotMore=false;}
+    scrollHot=false;InvalidateRect(w,nullptr,FALSE);return 0;
   }
   return DefWindowProc(w,m,a,b);
+}
+// The divider between the Library and the preview: drag to resize, click to expand or restore.
+bool splitHot=false,splitDrag=false,splitMoved=false,sideAnimating=false,sideTargetFull=false;
+int splitStartX=0,splitStartWidth=0;
+double sideFrom=0,sideTo=0;
+Clock::time_point sideStart;
+bool overSplit(POINT p){return p.y>65 && p.x>=sideWidth-9 && p.x<=sideWidth+10;}
+void applySide(int wanted,bool full){
+  RECT client;GetClientRect(libraryWindow,&client);int cw=dip(client.right);
+  sideFull=full;
+  sideWidth=full?cw-14:std::clamp(wanted,236,std::max(236,sideAnimating?cw-14:cw-344));
+  mainOff=sideFull || cw-sideWidth<330;
+  ShowWindow(GetDlgItem(libraryWindow,102),!settingsPage && (!mainOff || sideFull)?SW_SHOW:SW_HIDE);
+  ShowWindow(GetDlgItem(libraryWindow,109),!settingsPage && !mainOff?SW_SHOW:SW_HIDE);
+  SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));
+}
+void saveSide(){
+  auto file=(folder/L"settings.ini").wstring();
+  WritePrivateProfileStringW(L"wallpaper",L"libraryWidth",std::to_wstring(sideLast).c_str(),file.c_str());
+  WritePrivateProfileStringW(L"wallpaper",L"libraryFull",sideFull?L"1":L"0",file.c_str());
+}
+void toggleSide(){
+  if(settingsPage)setUiPage(false);
+  RECT client;GetClientRect(libraryWindow,&client);
+  sideTargetFull=!sideFull;
+  if(!sideFull)sideLast=sideWidth;
+  sideFrom=sideWidth;sideTo=sideTargetFull?dip(client.right)-14:sideLast;
+  sideStart=Clock::now();sideAnimating=true;
+  SetTimer(libraryWindow,5,USER_TIMER_MINIMUM,nullptr);
 }
 // Keep the native button's input, radio grouping and accessibility behavior.
 LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR){
   int id=GetDlgCtrlID(w);
-  if(id==100 && m==WM_MOUSEWHEEL)return SendMessage(libraryScroll,m,a,b);
   if(m==WM_LBUTTONDOWN)SendMessage(GetParent(w),WM_CHANGEUISTATE,MAKEWPARAM(UIS_SET,UISF_HIDEFOCUS),0);
-  if(id==100 && (m==WM_MOUSEMOVE || m==WM_MOUSELEAVE)){
-    int next=-1;
-    if(m==WM_MOUSEMOVE){
-      auto hit=SendMessage(w,LB_ITEMFROMPOINT,0,b);
-      if(!HIWORD(hit) && LOWORD(hit)<libraryFiles.size())next=LOWORD(hit);
-    }
-    if(next!=hoveredRow){
-      for(int index:{hoveredRow,next}){
-        RECT row;
-        if(index>=0 && SendMessage(w,LB_GETITEMRECT,index,(LPARAM)&row)!=LB_ERR)
-          InvalidateRect(w,&row,FALSE);
-      }
-      hoveredRow=next;
-    }
-  }
   if(m==WM_MOUSEMOVE){
     TRACKMOUSEEVENT query{sizeof query,TME_QUERY,w,0};
     TrackMouseEvent(&query);
@@ -1116,12 +1336,14 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         SendMessage(c, WM_SETFONT, (WPARAM)uiFont, TRUE);
         return c;
       };
-      libraryScroll = CreateWindowEx(WS_EX_CONTROLPARENT, L"LitelyScroll", L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-                                     0, 0, 0, 0, w, nullptr, instance, nullptr);
-      libraryList = CreateWindowEx(0, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
-                                   LBS_OWNERDRAWFIXED | LBS_HASSTRINGS, 0, 0, 0, 0, libraryScroll, (HMENU)(INT_PTR)100, instance, nullptr);
-      SetWindowSubclass(libraryList, uiButtonProc, 1, 0);
-      SendMessage(libraryList, WM_SETFONT, (WPARAM)uiFont, TRUE);
+      libraryList = libraryScroll = CreateWindowEx(0, L"LitelyScroll", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                                   0, 0, 0, 0, w, (HMENU)(INT_PTR)100, instance, nullptr);
+      {
+        auto file = (folder / L"settings.ini").wstring();
+        sideLast = std::clamp((int)GetPrivateProfileIntW(L"wallpaper", L"libraryWidth", 236, file.c_str()), 236, 4000);
+        sideFull = GetPrivateProfileIntW(L"wallpaper", L"libraryFull", 0, file.c_str()) != 0;
+        sideWidth = sideLast;
+      }
       control(L"BUTTON", L"Add MP4", BS_OWNERDRAW, 101);
       control(L"BUTTON", L"Set wallpaper", BS_OWNERDRAW, 102);
       control(L"BUTTON", L"Smooth resume", BS_AUTORADIOBUTTON | WS_GROUP, 103);
@@ -1133,7 +1355,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       control(L"BUTTON", L"Settings", BS_OWNERDRAW, 106);
       control(L"BUTTON", L"Tray menu", BS_OWNERDRAW, 108);
       control(L"BUTTON", L"Library", BS_OWNERDRAW, 107);
-      SendMessage(libraryList,LB_SETITEMHEIGHT,0,px(72));placeList();
+      placeList();
       SetTimer(w, 1, 1000, nullptr);
       return 0;
     }
@@ -1145,27 +1367,31 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       auto move=[&](HWND child,int x,int y,int span,int tall){
         if(batch)batch=DeferWindowPos(batch,child,nullptr,px(x),px(y),px(span),px(std::max(0,tall)),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS);
       };
+      if(sideFull)sideWidth=cw-14;
+      else if(!sideAnimating)sideWidth=std::clamp(sideWidth,236,std::max(236,cw-344));
+      mainOff=sideFull || cw-sideWidth<330;
+      bool grid=gridMode();
       int hero=heroBottom(cw,ch);
-      move(libraryScroll,12,122,212,ch-226);
-      move(GetDlgItem(w,101),124,80,100,30);
-      move(GetDlgItem(w,106),12,ch-92,212,36);
-      move(GetDlgItem(w,108),12,ch-50,212,36);
+      move(libraryScroll,12,122,sideWidth-24,grid?ch-186:ch-226);
+      move(GetDlgItem(w,101),sideWidth-112,80,100,30);
+      if(grid){move(GetDlgItem(w,106),12,ch-48,110,36);move(GetDlgItem(w,108),126,ch-48,120,36);}
+      else{move(GetDlgItem(w,106),12,ch-92,sideWidth-24,36);move(GetDlgItem(w,108),12,ch-50,sideWidth-24,36);}
       const wchar_t *caption=actionCaption();
       int actionWidth=!wcscmp(caption,L"Set wallpaper")?128:!wcscmp(caption,L"Resume")?96:88;
-      move(GetDlgItem(w,102),cw-28-actionWidth,hero+16,actionWidth,36);
+      move(GetDlgItem(w,102),cw-28-actionWidth,sideFull?ch-48:hero+16,actionWidth,36);
       move(GetDlgItem(w,109),cw-28-actionWidth-108,hero+16,100,36);
-      move(GetDlgItem(w,107),254,80,104,32);
-      move(GetDlgItem(w,103),256,206,cw-284,68);
-      move(GetDlgItem(w,104),256,278,cw-284,68);
-      move(GetDlgItem(w,105),256,406,cw-284,68);
-      move(GetDlgItem(w,111),256,478,cw-284,68);
+      move(GetDlgItem(w,107),sideWidth+18,80,104,32);
+      move(GetDlgItem(w,103),sideWidth+20,206,cw-sideWidth-48,68);
+      move(GetDlgItem(w,104),sideWidth+20,278,cw-sideWidth-48,68);
+      move(GetDlgItem(w,105),sideWidth+20,406,cw-sideWidth-48,68);
+      move(GetDlgItem(w,111),sideWidth+20,478,cw-sideWidth-48,68);
       if(batch)EndDeferWindowPos(batch);
       InvalidateRect(w, nullptr, FALSE);
       return 0;
     }
     case WM_DPICHANGED:{
       libraryDpi=HIWORD(a);
-      SendMessage(libraryList,LB_SETITEMHEIGHT,0,px(72));placeList();
+      placeList();
       RECT suggested=*(RECT*)b;
       SetWindowPos(w,nullptr,suggested.left,suggested.top,suggested.right-suggested.left,suggested.bottom-suggested.top,SWP_NOZORDER|SWP_NOACTIVATE);
       return 0;
@@ -1184,6 +1410,27 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         KillTimer(w, 1);
       break;
     case WM_TIMER:
+      if (a == 5) {
+        double t = std::min(1., std::chrono::duration<double, std::milli>(Clock::now() - sideStart).count() / 260);
+        double eased = 1 - (1 - t) * (1 - t) * (1 - t);
+        if (t >= 1) {
+          KillTimer(w, 5);
+          sideAnimating = false;
+          applySide((int)sideTo, sideTargetFull);
+          saveSide();
+        } else
+          applySide((int)std::lround(sideFrom + (sideTo - sideFrom) * eased), false);
+        UpdateWindow(w);
+        return 0;
+      }
+      if (a == 6) {
+        if (!playbackBusy()) {
+          KillTimer(w, 6);
+          updateActionLabel();
+        }
+        InvalidateRect(GetDlgItem(w, 102), nullptr, FALSE);
+        return 0;
+      }
       if (a == 3 && !posterPending) {
         KillTimer(w, 3);
         loadPreview();
@@ -1196,7 +1443,10 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if(!settingsPage){
           updateActionLabel();
           sampleStats();
-          RECT dirty;GetClientRect(w,&dirty);dirty.left=px(264);dirty.top=px(heroBottom(dip(dirty.right),dip(dirty.bottom))+16);
+          RECT dirty;GetClientRect(w,&dirty);
+          if(sideFull){dirty.left=px(250);dirty.top=dirty.bottom-px(56);}
+          else{dirty.left=px(sideWidth+28);dirty.top=px(heroBottom(dip(dirty.right),dip(dirty.bottom))+16);}
+          if(playbackBusy())SetTimer(w,6,16,nullptr);
           InvalidateRect(w,&dirty,FALSE);
         }
       }
@@ -1204,7 +1454,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         previewOpacity = std::min(1.f, previewOpacity + .1f);
         if (previewOpacity == 1)
           KillTimer(w, 2);
-        RECT art;GetClientRect(w,&art);art.left=px(264);art.top=px(92);art.bottom=px(heroBottom(dip(art.right),dip(art.bottom)));art.right-=px(28);
+        RECT art;GetClientRect(w,&art);art.left=px(sideWidth+28);art.top=px(92);art.bottom=px(heroBottom(dip(art.right),dip(art.bottom)));art.right-=px(28);
         InvalidateRect(w,&art,FALSE);
       }
       return 0;
@@ -1212,18 +1462,31 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       if(a==previewRequest){
         int i=selectedIndex();
         if(i>=0 && fs::exists(thumbnailPath(libraryFiles[i]))){
-          rowImages[i]=readArtwork(artworkPath(libraryFiles[i]),true);
+          rowImages[i]=readArtwork(artworkPath(libraryFiles[i]),true);dropRow(i);
           loadPreview();InvalidateRect(libraryList,nullptr,FALSE);
         }
       }
       return 0;
     case WM_SETCURSOR:
+      if((HWND)a==w && (splitHot || splitDrag)){SetCursor(LoadCursor(nullptr,IDC_SIZEWE));return TRUE;}
       if((HWND)a==w && titleHot){SetCursor(LoadCursor(nullptr,IDC_HAND));return TRUE;}
       break;
     case WM_MOUSEMOVE:
     case WM_MOUSELEAVE:{
       POINT at{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
-      bool hot=message==WM_MOUSEMOVE && !settingsPage && selectedIndex()>=0 && PtInRect(&titleBox,at);
+      if(splitDrag && message==WM_MOUSEMOVE){
+        int moved=at.x-splitStartX;
+        if(std::abs(moved)>3)splitMoved=true;
+        if(splitMoved){
+          RECT client;GetClientRect(w,&client);int wanted=splitStartWidth+moved;
+          applySide(wanted,wanted>dip(client.right)-314);
+          UpdateWindow(w);
+        }
+        return 0;
+      }
+      bool edge=message==WM_MOUSEMOVE && overSplit(at);
+      if(edge!=splitHot){splitHot=edge;RECT grip{px(sideWidth-12),0,px(sideWidth+12),px(4000)};InvalidateRect(w,&grip,FALSE);}
+      bool hot=message==WM_MOUSEMOVE && !settingsPage && !mainOff && selectedIndex()>=0 && PtInRect(&titleBox,at);
       if(message==WM_MOUSEMOVE){TRACKMOUSEEVENT leave{sizeof leave,TME_LEAVE,w,0};TrackMouseEvent(&leave);}
       if(hot!=titleHot){
         titleHot=hot;
@@ -1232,13 +1495,36 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       }
       return 0;
     }
+    case WM_LBUTTONDOWN:{
+      POINT press{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
+      if(overSplit(press) && !sideAnimating){
+        splitDrag=true;splitMoved=false;splitStartX=press.x;splitStartWidth=sideWidth;
+        SetCapture(w);
+      }
+      return 0;
+    }
+    case WM_CAPTURECHANGED:splitDrag=false;return 0;
     case WM_LBUTTONUP:{
       POINT click{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
-      if(!settingsPage && PtInRect(&titleBox,click))SendMessage(w,WM_COMMAND,110,0);
+      if(splitDrag){
+        bool moved=splitMoved;
+        ReleaseCapture();
+        if(!moved)toggleSide();
+        else{if(!sideFull)sideLast=sideWidth;saveSide();}
+        return 0;
+      }
+      if(!settingsPage && !mainOff && PtInRect(&titleBox,click))SendMessage(w,WM_COMMAND,110,0);
       return 0;
     }
     case WM_COMMAND: {
       int id = LOWORD(a);
+      if (id == 100 && HIWORD(a) == 9) {
+        // A click on a grid tile puts that wallpaper on the desktop; one already there is left alone.
+        int i = selectedIndex();
+        if (i < 0 || !_wcsicmp(libraryFiles[i].c_str(), source.c_str()))
+          return 0;
+        id = 102;
+      }
       if (id == 100 && HIWORD(a) == LBN_SELCHANGE){
         setUiPage(false);loadPreview();
       }
@@ -1264,7 +1550,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if(i>=0){
           auto name=displayName(libraryFiles[i]);
           if(DialogBoxParam(instance,MAKEINTRESOURCE(200),w,renameProc,(LPARAM)name.c_str())==1){
-            fillList();SendMessage(libraryList,LB_SETCURSEL,i,0);loadPreview();
+            fillList();selectedRow=i;scrollReveal(i,false);InvalidateRect(libraryList,nullptr,FALSE);loadPreview();
           }
         }
         return 0;
@@ -1292,6 +1578,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       }
 
       if (id == 102) {
+        SetTimer(w, 6, 16, nullptr);
         int i = selectedIndex();
         if (i >= 0) {
           if (!fs::exists(libraryFiles[i])) {
@@ -1355,50 +1642,18 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
       return CDRF_SKIPDEFAULT;
     }
-    case WM_MEASUREITEM:((MEASUREITEMSTRUCT*)b)->itemHeight=px(72);return TRUE;
     case WM_DRAWITEM:{
       auto d=(DRAWITEMSTRUCT*)b;
       if(d->CtlID==100 && d->itemID==(UINT)-1)return TRUE;
       HDC target=d->hDC;
       RECT bounds=d->rcItem;
       int widthPx=bounds.right-bounds.left,heightPx=bounds.bottom-bounds.top;
-      unsigned rowKey=0;
-      if(d->CtlID==100 && d->itemID<libraryFiles.size()){
-        bool chosen=(d->itemState&ODS_SELECTED)!=0;
-        rowKey=128|(chosen?1:0)|((int)d->itemID==hoveredRow?2:0)|(chosen && (d->itemState&ODS_FOCUS) && keyboardCues(d->hwndItem)?4:0)|
-               (!_wcsicmp(libraryFiles[d->itemID].c_str(),source.c_str())?8:0)|(paused||batteryOverride?16:0);
-        if(rowCache.size()<libraryFiles.size())rowCache.resize(libraryFiles.size());
-        auto &kept=rowCache[d->itemID];
-        if(kept.bitmap && kept.key==rowKey && kept.wide==widthPx && kept.tall==heightPx){
-          HDC memory=CreateCompatibleDC(target);auto before=SelectObject(memory,kept.bitmap);
-          BitBlt(target,bounds.left,bounds.top,widthPx,heightPx,memory,0,0,SRCCOPY);
-          SelectObject(memory,before);DeleteDC(memory);
-          return TRUE;
-        }
-      }
       HDC buffer=CreateCompatibleDC(target);
       HBITMAP bitmap=CreateCompatibleBitmap(target,widthPx,heightPx);
       if(!buffer || !bitmap){if(buffer)DeleteDC(buffer);if(bitmap)DeleteObject(bitmap);return FALSE;}
       auto old=SelectObject(buffer,bitmap);
       RECT r{0,0,dip(widthPx),dip(heightPx)};
-      if(d->CtlID==100){
-        int i=(int)d->itemID;bool selected=(d->itemState&ODS_SELECTED)!=0,hot=i==hoveredRow;
-        fillRect(buffer,r,cSidebar);
-        RECT card{r.left+2,r.top+2,r.right-2,r.bottom-2};
-        COLORREF fill=selected?cSelected:hot?cHover:cSidebar;
-        if(selected){fillRound(buffer,card,cSelectedLine,8);InflateRect(&card,-1,-1);}
-        if(selected || hot)fillRound(buffer,card,fill,7);
-        RECT thumb{r.left+12,r.top+14,r.left+65,r.top+58};
-        if(i<(int)rowImages.size() && rowImages[i] && rowImages[i]->GetLastStatus()==Gdiplus::Ok)
-          drawCover(buffer,rowImages[i].get(),thumb);
-        else{fillRound(buffer,thumb,cRaised,5);paintIcon(buffer,L"",thumb,16,cMuted);}
-        roundCorners(buffer,thumb,5,fill);
-        paintText(buffer,displayName(libraryFiles[i]),{r.left+76,r.top+15,r.right-8,r.top+34},13,cText,FW_SEMIBOLD);
-        bool active=!_wcsicmp(libraryFiles[i].c_str(),source.c_str());
-        auto detail=active?(paused||batteryOverride?L"On desktop · paused":L"On desktop"):videoDetails[i];
-        paintText(buffer,detail,{r.left+76,r.top+37,r.right-8,r.bottom-8},12,active?cAccent:cMuted);
-        if(selected && (d->itemState&ODS_FOCUS) && keyboardCues(d->hwndItem))focusRing(buffer,{r.left+2,r.top+2,r.right-2,r.bottom-2},8);
-      }else{
+      {
         int id=d->CtlID;
         const wchar_t *glyph=id==101?L"":id==106?L"":id==108?L"":id==107?L"":id==109?L"":nullptr;
         bool sidebar=id==101 || id==106 || id==108;
@@ -1406,14 +1661,19 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if(id==106 && settingsPage){fillRect(buffer,r,background);fillRound(buffer,r,cSelected,7);background=cSelected;}
         ButtonStyle style{id==102,background,glyph,id==106 || id==108,id==101?RGB(215,200,255):CLR_INVALID,id==109};
         drawButton(buffer,*d,r,style);
+        if(id==102 && playbackBusy()){
+          // While the player switches between playing and paused, a turning arc stands in for the label.
+          bool off=(d->itemState&ODS_DISABLED)!=0;
+          fillRound(buffer,r,off?RGB(74,68,92):cAccent,7);
+          Smooth smooth(buffer);
+          Gdiplus::Pen pen(gdip(off?cSoft:cInk),fpx(2));
+          pen.SetStartCap(Gdiplus::LineCapRound);pen.SetEndCap(Gdiplus::LineCapRound);
+          int cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2;
+          smooth.g.DrawArc(&pen,frect({cx-8,cy-8,cx+8,cy+8}),(float)(GetTickCount64()%800)*.45f,270);
+        }
       }
       BitBlt(target,bounds.left,bounds.top,widthPx,heightPx,buffer,0,0,SRCCOPY);
-      SelectObject(buffer,old);DeleteDC(buffer);
-      if(rowKey){
-        auto &kept=rowCache[d->itemID];
-        if(kept.bitmap)DeleteObject(kept.bitmap);
-        kept={bitmap,rowKey,widthPx,heightPx};
-      }else DeleteObject(bitmap);
+      SelectObject(buffer,old);DeleteObject(bitmap);DeleteDC(buffer);
       return TRUE;
     }
     case WM_CTLCOLORLISTBOX:
@@ -1437,16 +1697,41 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       RECT pixels=r;r=units(r);
       {UiDC mapping(dc);
       FillRect(dc, &r, uiBrush);
-      panel(dc,{0,65,236,r.bottom},cSidebar);
+      panel(dc,{0,65,sideWidth,r.bottom},cSidebar);
       panel(dc,{0,64,r.right,65},cLine);
-      panel(dc,{235,65,236,r.bottom},cLine);
-      panel(dc,{24,r.bottom-102,212,r.bottom-101},cLine);
+      panel(dc,{sideWidth-1,65,sideWidth,r.bottom},cLine);
+      panel(dc,{24,r.bottom-(gridMode()?60:102),sideFull?r.right-28:sideWidth-24,r.bottom-(gridMode()?59:101)},cLine);
       }
       DrawIconEx(dc,px(23),px(16),LoadIcon(instance,MAKEINTRESOURCE(IDI_LITELY)),px(32),px(32),0,nullptr,DI_NORMAL);
       paintText(dc,L"Litely",{66,16,236,50},22,cText,FW_SEMIBOLD,DT_LEFT|DT_VCENTER|DT_SINGLELINE,displayFace());
       paintText(dc,L"Library",{24,84,120,108},15,cText,FW_SEMIBOLD,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-      int left=264,right=r.right-28;
-      if(settingsPage){
+      {
+        int middle=(65+r.bottom)/2;bool lit=splitHot || splitDrag;
+        RECT grip{sideWidth-8,middle-24,sideWidth+8,middle+24};
+        fillRound(dc,grip,lit?cSelected:cRaised,8);
+        strokeRound(dc,grip,lit?cSelectedLine:cLine,8,1);
+        paintIcon(dc,sideFull?L"":L"",grip,10,lit?cAccent:cSoft);
+      }
+      int left=sideWidth+28,right=r.right-28;
+      if(sideFull){
+        // With the preview hidden, playback state and usage sit in the bottom bar beside the action button.
+        int y=r.bottom-48,edge=r.right-28;
+        const wchar_t *caption=actionCaption();
+        edge-=(!wcscmp(caption,L"Set wallpaper")?128:!wcscmp(caption,L"Resume")?96:88)+22;
+        for(int k=2;k>=0;k--){
+          const auto &value=k==0?cpuValue:k==1?ramValue:gpuValue;
+          int used=paintText(dc,value,{edge-120,y,edge,y+36},13,cText,FW_SEMIBOLD,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
+          int label=paintText(dc,k==0?L"CPU":k==1?L"RAM":L"Video memory",{edge-used-116,y,edge-used-6,y+36},12,cMuted,FW_NORMAL,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
+          edge-=used+6+label+22;
+        }
+        if(!source.empty() && edge>330){
+          bool playing=!paused && !batteryOverride && !covered;
+          const wchar_t *state=batteryOverride?L"Paused for Energy Saver":paused?L"Paused":covered?L"Desktop covered":L"Playing";
+          int used=paintText(dc,state,{262,y,edge,y+36},13,cSoft,FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
+          paintText(dc,displayName(source),{262+used+8,y,edge,y+36},13,playing?cAccent:cMuted,FW_SEMIBOLD,DT_VCENTER|DT_SINGLELINE);
+        }
+      }else if(mainOff){
+      }else if(settingsPage){
         paintText(dc,L"Settings",{left,118,right,158},28,cText,FW_SEMIBOLD);
         paintText(dc,L"Performance",{left,176,right,198},15,cText,FW_SEMIBOLD);
         paintText(dc,playbackPath.empty()?L"Playback starts with the next wallpaper":playbackPath,{left+120,178,right,198},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
@@ -1525,7 +1810,10 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       uiFont = nullptr;
       uiBrush = nullptr;
       libraryWindow = nullptr;
-      libraryScroll = nullptr;
+      closeTileMenu();
+      libraryList = libraryScroll = nullptr;
+      selectedRow = -1;
+      sideAnimating = splitDrag = false;
       clearRowCache();
       scrollOffset = scrollTarget = 0;
       Gdiplus::GdiplusShutdown(graphicsToken);
@@ -1593,8 +1881,13 @@ void openLibrary(bool settings = false) {
     WNDCLASS scroller{};
     scroller.hInstance = instance;
     scroller.lpfnWndProc = scrollProc;
+    scroller.style = CS_DBLCLKS;
     scroller.hCursor = LoadCursor(nullptr, IDC_ARROW);
     scroller.lpszClassName = L"LitelyScroll";
+    RegisterClass(&scroller);
+    scroller.lpfnWndProc = tileMenuProc;
+    scroller.style = 0;
+    scroller.lpszClassName = L"LitelyMenu";
     RegisterClass(&scroller);
   }
   libraryDpi=GetDpiForSystem();

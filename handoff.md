@@ -50,6 +50,10 @@ The Library shows process CPU, working-set RAM, and local GPU allocation. Its sa
 
 User data lives in `%LOCALAPPDATA%\Litely`. `settings.ini` stores active playback state and preferences, `library.txt` is a UTF-16 path list, and `library-names.ini` stores display names by per-path key. Desktop stills use `wallpaper-*.bmp`, library stills use `*.preview.bmp`, and converted copies live in `optimized\`. Use disposable files for import/remove tests.
 
+## Library list and grid
+
+The Library list is a custom window (`LitelyScroll`, `scrollProc`), not a list box: it draws cached row images, scrolls by pixels with time-based easing, and becomes a grid of tiles when the panel is 400 units or wider (`gridMode`). `sideWidth` is the panel width; the divider is dragged or clicked in `libraryProc` (`overSplit`, `applySide`, `toggleSide`, timer 5), and `libraryWidth` / `libraryFull` persist in `settings.ini`. When the panel fills the window (`sideFull`) the preview is hidden and playback state, usage and the action button move to the bottom bar. A grid click sends `WM_COMMAND` 100 with code 9, which activates the wallpaper; the tile menu is a small themed popup (`LitelyMenu`). The action button shows a turning arc while `playbackBusy()`; `LITELY_TEST_BUSY` forces that state for screenshots. Not verified: hover highlights and dragging with a real mouse (synthetic input competes with the real cursor), keyboard-only use, and screen-reader access, which the old list box provided and the custom list does not.
+
 ## Deferred review notes
 
 From the independent review of the lean player (none is a crash or a visible defect in normal use):
