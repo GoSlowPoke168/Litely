@@ -34,6 +34,7 @@ $start.Environment['LITELY_TEST_SKIP_PERSONALIZATION'] = '1'
 $start.Environment['LITELY_TEST_VISIBLE'] = '1'
 $start.Environment['LITELY_TEST_POWER'] = 'ac'
 $start.Environment['LITELY_TEST_LOG'] = $log
+$start.Environment['LITELY_TEST_POWER'] = 'ac'
 $app = [Diagnostics.Process]::Start($start)
 function Get-Copy { Get-ChildItem (Join-Path $data 'Litely\optimized') -Recurse -Filter '*-original-30fps.mp4' -ErrorAction SilentlyContinue | Select-Object -First 1 }
 function Wait-Copy { for ($i = 0; $i -lt 180 -and !(Get-Copy); $i++) { Start-Sleep -Seconds 1 }; if (!(Get-Copy)) { throw 'The 30 fps copy was not made' } }
@@ -76,6 +77,24 @@ try {
     Wait-Copy
     Wait-Title 'Litely - playing (30 fps on battery)' 5
     'deleted copy was remade and resumed'
+    [SwitchTest]::PostMessage($window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+    if (!$app.WaitForExit(5000)) { throw 'Litely did not exit' }
+    $start.Environment['LITELY_PIPELINE'] = 'legacy'
+    $app = [Diagnostics.Process]::Start($start)
+    Start-Sleep -Seconds 3
+    $window = [SwitchTest]::Find($app.Id, 'LitelyController')
+    Wait-Title 'Litely - playing'
+    [SwitchTest]::PostMessage($window, 0x0111, [IntPtr]2, [IntPtr]::Zero) | Out-Null
+    Wait-Title 'Litely - paused'
+    Start-Sleep -Seconds 1
+    Set-Power $true
+    Start-Sleep -Seconds 2
+    $app.Refresh(); $before = $app.TotalProcessorTime.TotalSeconds
+    Start-Sleep -Seconds 2
+    $app.Refresh(); $used = $app.TotalProcessorTime.TotalSeconds - $before
+    if ([SwitchTest]::Title($window) -ne 'Litely - paused') { throw "A power change un-paused the fallback player: '$([SwitchTest]::Title($window))'" }
+    if ($used -gt 0.05) { throw "The paused fallback player used $used CPU-seconds in 2 s after a power change" }
+    'paused fallback player stays idle across a power change'
     [SwitchTest]::PostMessage($window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     if (!$app.WaitForExit(5000)) { throw 'Litely did not exit' }
 } finally {

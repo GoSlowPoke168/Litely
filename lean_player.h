@@ -9,7 +9,7 @@ UINT leanWidth = 0, leanHeight = 0;
 double leanDuration = 0;
 DXGI_COLOR_SPACE_TYPE leanColorSpace = DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
 HRESULT leanError = S_OK;
-unsigned leanLate = 0;
+unsigned leanLate = 0, leanRebased = 0;
 double leanWorstLate = 0;
 
 std::thread leanWorker;
@@ -99,7 +99,8 @@ void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceMa
       to.hVal.QuadPart = from;
       check(reader->SetCurrentPosition(GUID_NULL, to));
     }
-    unsigned fed = 0;
+    unsigned fed = 0, unanswered = 0;
+    unsigned wraps = 0;
     bool first = true;
     for (;;) {
       {
@@ -127,12 +128,16 @@ void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceMa
           if (!fed)
             throw MF_E_INVALID_STREAM_DATA;
           fed = 0;
+          ++wraps;
           PROPVARIANT to{};
           to.vt = VT_I8;
           check(reader->SetCurrentPosition(GUID_NULL, to));
           from = 0;
         } else if (packet) {
           ++fed;
+          // A stream the decoder swallows without ever producing a frame.
+          if (++unanswered > 600)
+            throw MF_E_INVALID_STREAM_DATA;
           check(decoder->ProcessInput(0, packet.Get(), 0));
         }
         continue;
@@ -142,10 +147,13 @@ void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceMa
         continue;
       LONGLONG ts = 0;
       check(sample->GetSampleTime(&ts));
+      unanswered = 0;
       // Timestamps running backwards mark the loop point; a clip's first one is not always zero.
-      if (last >= 0 && ts < last) {
+      if (last >= 0 && (ts < last || (wraps && ts == last))) {
         offset += last + frameTime - ts;
         from = 0;
+        if (wraps)
+          --wraps;
       } else if (ts < from)
         continue;
       last = ts;
@@ -260,6 +268,7 @@ bool leanAcquire(LONGLONG *pts) {
     leanRebase = false;
   } else if (LONGLONG lateness = now - leanBase - frame.time; lateness > leanFrameTime) {
     leanBase += lateness;
+    ++leanRebased;
     // One refresh of delay is Present waiting on the display, not a stutter.
     if (lateness > leanFrameTime * 3 / 2) {
       ++leanLate;

@@ -595,10 +595,7 @@ void updatePlayFile(){
   if(swapKept){
     playingFile=next;
     leanRestart(next,position);
-  }else{
-    closePlayer();
-    openPlayer();
-  }
+  }else closePlayer();
   visibility();
 }
 void stopBatteryCopy(bool cancelled){

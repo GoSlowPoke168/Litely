@@ -538,8 +538,16 @@ void draw() {
     leanSchedule();
     if (!acquired)
       return;
-    if (posterPending || checkFrontBuffer)
-      texture = leanStill();
+    if (posterPending || checkFrontBuffer) {
+      try {
+        texture = leanStill();
+      } catch (HRESULT) {
+        leanFailedFor = source;
+        closePlayer();
+        openPlayer();
+        return;
+      }
+    }
   } else if (!drawEngine(pts, texture))
     return;
   if (posterPending) {
@@ -886,6 +894,7 @@ void toggle() {
 }
 void activateSource(const fs::path &path) {
   closePlayer();
+  leanFailedFor.clear();
   source = path;
   preparePoster(true);
   position = 0;
@@ -1098,9 +1107,11 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
       if (a != generation || !playerOpen())
         return 0;
       if (b == LeanFailed) {
-        leanFailedFor = source;
+        if (!ready)
+          leanFailedFor = source;
         closePlayer();
-        openPlayer();
+        if (!paused && !applyingPause)
+          openPlayer();
         return 0;
       }
       if (b == LeanReady && ready) {
@@ -1108,8 +1119,13 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
           swapKept = false;
           closePlayer();
           openPlayer();
-        } else if (!leanPaused())
-          startClock();
+        } else {
+          ComPtr<IDXGISwapChain3> colour;
+          check(chain.As(&colour));
+          check(colour->SetColorSpace1(leanColorSpace));
+          if (!leanPaused())
+            startClock();
+        }
         return 0;
       }
       if (b == MF_MEDIA_ENGINE_EVENT_ERROR) {
@@ -1118,9 +1134,18 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
         throw(e ? e->GetExtendedErrorCode() : E_FAIL);
       }
       if (!ready) {
-        if (leanActive)
-          createOutput(leanWidth, leanHeight, true);
-        else
+        if (leanActive) {
+          try {
+            if (GetEnvironmentVariableW(L"LITELY_TEST_NO_NV12", nullptr, 0))
+              throw E_NOTIMPL;
+            createOutput(leanWidth, leanHeight, true);
+          } catch (HRESULT) {
+            leanFailedFor = source;
+            closePlayer();
+            openPlayer();
+            return 0;
+          }
+        } else
           setupOutput();
         ready = true;
         {
@@ -1333,8 +1358,15 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
         throw HRESULT_FROM_WIN32(GetLastError());
       if (historyAt && wait == WAIT_OBJECT_0 + historyAt)
         forgetPosterHistory();
-      if (copyAt && wait == WAIT_OBJECT_0 + copyAt)
-        finishBatteryCopy();
+      if (copyAt && wait == WAIT_OBJECT_0 + copyAt) {
+        try {
+          finishBatteryCopy();
+        } catch (HRESULT h) {
+          failed(h);
+        } catch (...) {
+          failed(E_FAIL);
+        }
+      }
       if (wait == WAIT_OBJECT_0) {
         try {
           playbackTick();
@@ -1371,7 +1403,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           initialCPU = cpuSeconds();
           firstFrames = frames;
           report << (leanActive ? L"pipeline lean" : L"pipeline legacy") << std::endl;
-          leanLate = 0;
+          leanLate = leanRebased = 0;
           leanWorstLate = 0;
         }
         if (phase == 0 && sampleStart &&
@@ -1379,6 +1411,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           report << L"pacing frames " << frames - firstFrames << L" expected "
                  << std::llround(millisecondsSince(pacingStart) / 1000 * frameRate)
                  << L" late " << leanLate << L" worst " << leanWorstLate << L" ms" << std::endl;
+          report << L"clock re-bases " << leanRebased << std::endl;
           report << L"sample wall seconds "
                  << (GetTickCount64() - sampleStart) / 1000.0
                  << L" process CPU seconds " << cpuSeconds() - initialCPU
