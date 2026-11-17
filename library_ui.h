@@ -491,7 +491,7 @@ void paintImport(HWND w,HDC dc){
   bool lowest=IsDlgButtonChecked(w,308)!=0;
   RECT box{24,296,436,452};
   fillRound(dc,box,cRaised,10);
-  paintText(dc,L"Estimated while playing",{40,310,420,328},12,cMuted);
+  paintText(dc,L"Estimated while playing, with the Library closed",{40,310,420,328},12,cMuted);
   if(!job.width || !job.height || !job.rate){
     paintText(dc,L"Windows couldn't read this video's size or frame rate, so Litely can't estimate savings.",{40,336,420,400},13,cSoft,FW_NORMAL,DT_LEFT|DT_WORDBREAK);
   }else{
@@ -730,7 +730,7 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
     }
     readProgress(*job);
     DpiScope scale(GetDpiForWindow(w));
-    RECT bar{px(24),px(384),px(436),px(420)};InvalidateRect(w,&bar,FALSE);
+    RECT bar{px(24),px(454),px(436),px(490)};InvalidateRect(w,&bar,FALSE);
     return TRUE;
   }
   if(msg==WM_CLOSE || (msg==WM_COMMAND && LOWORD(a)==IDCANCEL)){
