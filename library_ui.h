@@ -1462,8 +1462,8 @@ bool overSplit(POINT p){return p.y>65 && p.x>=sideWidth-9 && p.x<=sideWidth+10;}
 void applySide(int wanted,bool full){
   RECT client;GetClientRect(libraryWindow,&client);int cw=dip(client.right);
   sideFull=full;
-  sideWidth=full?cw-14:std::clamp(wanted,236,std::max(236,sideAnimating?cw-14:cw-500));
-  mainOff=sideFull || cw-sideWidth<486;
+  sideWidth=full?cw-14:std::clamp(wanted,236,std::max(236,sideAnimating || splitDrag?cw-14:cw-500));
+  mainOff=sideFull || cw-sideWidth<(sideAnimating || splitDrag?330:486);
   ShowWindow(GetDlgItem(libraryWindow,102),!settingsPage && (!mainOff || sideFull)?SW_SHOW:SW_HIDE);
   ShowWindow(GetDlgItem(libraryWindow,109),!settingsPage && !mainOff?SW_SHOW:SW_HIDE);
   SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));
@@ -1475,17 +1475,25 @@ void saveSide(){
   WritePrivateProfileStringW(L"wallpaper",L"libraryWidth",std::to_wstring(sideLast).c_str(),file.c_str());
   WritePrivateProfileStringW(L"wallpaper",L"libraryFull",sideFull?L"1":L"0",file.c_str());
 }
-void toggleSide(){
-  if(settingsPage)setUiPage(false);
+// While the panel moves, the preview may shrink from its 500-unit minimum to 330, fading out over that band.
+float previewRoom(int panelWidth){
   RECT client;GetClientRect(libraryWindow,&client);
-  sideTargetFull=!sideFull;
-  if(!sideFull)sideLast=sideWidth;
-  sideFrom=sideWidth;sideTo=sideTargetFull?dip(client.right)-14:sideLast;
-  warmCells((int)sideTo);
+  return (float)std::clamp((dip(client.right)-panelWidth-330)/170.,0.,1.);
+}
+void animateSide(int to,bool full){
+  sideTargetFull=full;
+  sideFrom=sideWidth;sideTo=to;
+  warmCells(to);
   fastDraw=true;
   timeBeginPeriod(1);
   sideStart=Clock::now();sideAnimating=true;
   SetTimer(libraryWindow,5,1,nullptr);
+}
+void toggleSide(){
+  if(settingsPage)setUiPage(false);
+  RECT client;GetClientRect(libraryWindow,&client);
+  if(!sideFull)sideLast=sideWidth;
+  animateSide(sideFull?sideLast:dip(client.right)-14,!sideFull);
 }
 // Keep the native button's input, radio grouping and accessibility behavior.
 LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR){
@@ -1664,8 +1672,8 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if(batch)batch=DeferWindowPos(batch,child,nullptr,px(x),px(y),px(span),px(std::max(0,tall)),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS|SWP_NOREDRAW);
       };
       if(sideFull)sideWidth=cw-14;
-      else if(!sideAnimating)sideWidth=std::clamp(sideWidth,236,std::max(236,cw-500));
-      mainOff=sideFull || cw-sideWidth<486;
+      else if(!sideAnimating && !splitDrag)sideWidth=std::clamp(sideWidth,236,std::max(236,cw-500));
+      mainOff=sideFull || cw-sideWidth<(sideAnimating || splitDrag?330:486);
       bool grid=gridMode();
       int hero=heroBottom(cw,ch);
       move(libraryScroll,12,122,sideWidth-24,grid?ch-186:ch-226);
@@ -1751,9 +1759,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         } else
         {
           int next = (int)std::lround(sideFrom + (sideTo - sideFrom) * eased);
-          // The preview fades over the last 160 units before it is too narrow to show, so it never just vanishes.
-          RECT client;GetClientRect(w, &client);
-          previewOpacity = (float)std::clamp((dip(client.right) - next - 486) / 160., 0., 1.);
+          previewOpacity = previewRoom(next);
           applySide(next, false);
         }
         UpdateWindow(w);
@@ -1767,6 +1773,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           KillTimer(w, 7);
         RECT bar;GetClientRect(w, &bar);bar.top = bar.bottom - px(60);
         InvalidateRect(w, &bar, FALSE);
+        InvalidateRect(GetDlgItem(w, 102), nullptr, FALSE);
         return 0;
       }
       if (a == 6) {
@@ -1825,8 +1832,10 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         int moved=at.x-splitStartX;
         if(std::abs(moved)>3)splitMoved=true;
         if(splitMoved){
-          RECT client;GetClientRect(w,&client);int wanted=splitStartWidth+moved;
-          applySide(wanted,wanted>dip(client.right)-470);
+          // The panel follows the cursor; the preview fades as it runs out of room.
+          int wanted=splitStartWidth+moved;
+          previewOpacity=previewRoom(wanted);
+          applySide(wanted,false);
           UpdateWindow(w);
         }
         return 0;
@@ -1858,8 +1867,22 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       if(splitDrag){
         bool moved=splitMoved;
         ReleaseCapture();
+        RECT client;GetClientRect(w,&client);int cw=dip(client.right);
         if(!moved)toggleSide();
-        else{if(!sideFull)sideLast=sideWidth;saveSide();}
+        else if(cw-sideWidth<500){
+          // Released where the preview has no room: finish the way the drag was going.
+          if(sideWidth>splitStartWidth){
+            if(splitStartWidth<=cw-500)sideLast=splitStartWidth;
+            animateSide(cw-14,true);
+          }else{
+            sideLast=cw-500;
+            animateSide(cw-500,false);
+          }
+        }else{
+          sideLast=sideWidth;previewOpacity=1;
+          applySide(sideWidth,false);
+          saveSide();
+        }
         return 0;
       }
       if(!settingsPage && !mainOff && PtInRect(&titleBox,click))SendMessage(w,WM_COMMAND,110,0);
@@ -2019,6 +2042,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if(id==106 && settingsPage){fillRect(buffer,r,background);fillRound(buffer,r,cSelected,7);background=cSelected;}
         ButtonStyle style{id==102,background,glyph,id==106 || id==108,id==101?cAccent:CLR_INVALID,id==109};
         drawButton(buffer,*d,r,style);
+        float fade=id==102 || id==109?(sideFull?barFade:previewOpacity):1;
         if(id==102 && playbackBusy()){
           // While the player switches between playing and paused, a turning arc stands in for the label.
           bool off=(d->itemState&ODS_DISABLED)!=0;
@@ -2028,6 +2052,14 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           pen.SetStartCap(Gdiplus::LineCapRound);pen.SetEndCap(Gdiplus::LineCapRound);
           int cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2;
           smooth.g.DrawArc(&pen,frect({cx-8,cy-8,cx+8,cy+8}),(float)(GetTickCount64()%800)*.45f,270);
+        }
+        if(fade<.999f){
+          // Fade toward the background by laying a translucent sheet of it over the finished button.
+          HDC sheet=CreateCompatibleDC(target);HBITMAP pixel=CreateCompatibleBitmap(target,1,1);
+          auto previous=SelectObject(sheet,pixel);SetPixel(sheet,0,0,background);
+          BLENDFUNCTION cover{AC_SRC_OVER,0,(BYTE)(255*(1-fade)),0};
+          GdiAlphaBlend(buffer,0,0,widthPx,heightPx,sheet,0,0,1,1,cover);
+          SelectObject(sheet,previous);DeleteObject(pixel);DeleteDC(sheet);
         }
       }
       BitBlt(target,bounds.left,bounds.top,widthPx,heightPx,buffer,0,0,SRCCOPY);
