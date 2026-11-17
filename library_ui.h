@@ -1273,11 +1273,13 @@ bool overSplit(POINT p){return p.y>65 && p.x>=sideWidth-9 && p.x<=sideWidth+10;}
 void applySide(int wanted,bool full){
   RECT client;GetClientRect(libraryWindow,&client);int cw=dip(client.right);
   sideFull=full;
-  sideWidth=full?cw-14:std::clamp(wanted,236,std::max(236,sideAnimating?cw-14:cw-344));
-  mainOff=sideFull || cw-sideWidth<330;
+  sideWidth=full?cw-14:std::clamp(wanted,236,std::max(236,sideAnimating?cw-14:cw-500));
+  mainOff=sideFull || cw-sideWidth<486;
   ShowWindow(GetDlgItem(libraryWindow,102),!settingsPage && (!mainOff || sideFull)?SW_SHOW:SW_HIDE);
   ShowWindow(GetDlgItem(libraryWindow,109),!settingsPage && !mainOff?SW_SHOW:SW_HIDE);
   SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));
+  // Paint the window and every control in one pass, so moved controls never show a stale frame.
+  RedrawWindow(libraryWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
 }
 void saveSide(){
   auto file=(folder/L"settings.ini").wstring();
@@ -1296,6 +1298,8 @@ void toggleSide(){
 // Keep the native button's input, radio grouping and accessibility behavior.
 LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR){
   int id=GetDlgCtrlID(w);
+  // These controls paint every pixel themselves, so an erase would only flash the old background.
+  if(m==WM_ERASEBKGND)return 1;
   if(m==WM_LBUTTONDOWN)SendMessage(GetParent(w),WM_CHANGEUISTATE,MAKEWPARAM(UIS_SET,UISF_HIDEFOCUS),0);
   if(m==WM_MOUSEMOVE){
     TRACKMOUSEEVENT query{sizeof query,TME_QUERY,w,0};
@@ -1365,11 +1369,11 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       // One batched move without copying old pixels, so neighbours can't carry each other's stale bits.
       HDWP batch=BeginDeferWindowPos(10);
       auto move=[&](HWND child,int x,int y,int span,int tall){
-        if(batch)batch=DeferWindowPos(batch,child,nullptr,px(x),px(y),px(span),px(std::max(0,tall)),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS);
+        if(batch)batch=DeferWindowPos(batch,child,nullptr,px(x),px(y),px(span),px(std::max(0,tall)),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS|SWP_NOREDRAW);
       };
       if(sideFull)sideWidth=cw-14;
-      else if(!sideAnimating)sideWidth=std::clamp(sideWidth,236,std::max(236,cw-344));
-      mainOff=sideFull || cw-sideWidth<330;
+      else if(!sideAnimating)sideWidth=std::clamp(sideWidth,236,std::max(236,cw-500));
+      mainOff=sideFull || cw-sideWidth<486;
       bool grid=gridMode();
       int hero=heroBottom(cw,ch);
       move(libraryScroll,12,122,sideWidth-24,grid?ch-186:ch-226);
@@ -1386,7 +1390,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       move(GetDlgItem(w,105),sideWidth+20,406,cw-sideWidth-48,68);
       move(GetDlgItem(w,111),sideWidth+20,478,cw-sideWidth-48,68);
       if(batch)EndDeferWindowPos(batch);
-      InvalidateRect(w, nullptr, FALSE);
+      RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
       return 0;
     }
     case WM_DPICHANGED:{
@@ -1479,7 +1483,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if(std::abs(moved)>3)splitMoved=true;
         if(splitMoved){
           RECT client;GetClientRect(w,&client);int wanted=splitStartWidth+moved;
-          applySide(wanted,wanted>dip(client.right)-314);
+          applySide(wanted,wanted>dip(client.right)-470);
           UpdateWindow(w);
         }
         return 0;
@@ -1773,7 +1777,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
                             covered?L"Desktop covered":playingFile!=source?L"Playing · 30 fps on battery":L"Playing";
         const wchar_t *glyph=i<0?L"":!active?L"":playing?L"":L"";
         paintIcon(dc,glyph,{left,hero+24,left+18,hero+44},14,playing?cAccent:cSoft);
-        paintText(dc,state,{left+26,hero+16,right-250,hero+52},13,cSoft,FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
+        paintText(dc,state,{left+26,hero+16,right-(!wcscmp(actionCaption(),L"Set wallpaper")?128:!wcscmp(actionCaption(),L"Resume")?96:88)-124,hero+52},13,cSoft,FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
         int divider=hero+68;
         {UiDC mapping(dc);panel(dc,{left,divider,right,divider+1},cLine);}
         int headingEnd=left+paintText(dc,L"Litely usage",{left,divider+18,right,divider+40},15,cText,FW_SEMIBOLD);
@@ -1790,7 +1794,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           if(space!=std::wstring::npos)
             paintText(dc,value.substr(space+1),{end+4,divider+78,right,divider+98},12,cMuted);
         }
-        paintText(dc,savingsText,{left,divider+108,right,divider+126},12,cMuted);
+        paintText(dc,savingsText,{left,divider+108,right,divider+142},12,cMuted,FW_NORMAL,DT_LEFT|DT_WORDBREAK);
       }
       BitBlt(screen, 0, 0, pixels.right, pixels.bottom, dc, 0, 0, SRCCOPY);
       SelectObject(dc, old);
