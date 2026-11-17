@@ -1,3 +1,4 @@
+param([string]$Clip = (Join-Path $PSScriptRoot 'build\wallpapers\hoshimi-miyabi-1080p.mp4'))
 $ErrorActionPreference = 'Stop'
 Add-Type -ReferencedAssemblies System.Diagnostics.Process, System.ComponentModel.Primitives, System.Collections.NonGeneric @'
 using System;
@@ -20,7 +21,6 @@ public static class SwitchTest {
     }
 }
 '@
-$clip = Join-Path $PSScriptRoot 'build\wallpapers\hoshimi-miyabi-1080p.mp4'
 $data = Join-Path ([IO.Path]::GetTempPath()) ("LitelySwitch-" + [Guid]::NewGuid())
 New-Item -ItemType Directory (Join-Path $data 'Litely') | Out-Null
 [IO.File]::WriteAllText((Join-Path $data 'Litely\settings.ini'), "[wallpaper]`r`nfile=$clip`r`npaused=0`r`ntime=0`r`nbatteryFps=1`r`n", [Text.Encoding]::Unicode)
@@ -36,7 +36,7 @@ $start.Environment['LITELY_TEST_POWER'] = 'ac'
 $start.Environment['LITELY_TEST_LOG'] = $log
 $start.Environment['LITELY_TEST_POWER'] = 'ac'
 $app = [Diagnostics.Process]::Start($start)
-function Get-Copy { Get-ChildItem (Join-Path $data 'Litely\optimized') -Recurse -Filter '*-original-30fps.mp4' -ErrorAction SilentlyContinue | Select-Object -First 1 }
+function Get-Copy { Get-ChildItem (Join-Path $data 'Litely\optimized') -Recurse -Filter '*-original-30fps*.mp4' -ErrorAction SilentlyContinue | Select-Object -First 1 }
 function Wait-Copy { for ($i = 0; $i -lt 180 -and !(Get-Copy); $i++) { Start-Sleep -Seconds 1 }; if (!(Get-Copy)) { throw 'The 30 fps copy was not made' } }
 function Set-Power($battery) { [SwitchTest]::PostMessage($window, 0x8005, [IntPtr][int]$battery, [IntPtr]::Zero) | Out-Null }
 function Wait-Title($expected, $seconds = 2) {

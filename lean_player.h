@@ -226,7 +226,9 @@ void leanStart(const fs::path &file, double start) {
   leanRebase = true;
   wchar_t forced[16]{};
   GetEnvironmentVariableW(L"LITELY_PIPELINE", forced, 16);
-  if (wcscmp(forced, L"lean") && directFailedFor != file && directOpen(file, start)) {
+  bool rejected = std::find(directRejected.begin(), directRejected.end(), file) != directRejected.end();
+  if (wcscmp(forced, L"lean") && !rejected && directFailedFor != file && directOpen(file, start)) {
+    leanShown = {};
     leanWidth = directWidth;
     leanHeight = directHeight;
     frameRate = directRate;
@@ -236,6 +238,8 @@ void leanStart(const fs::path &file, double start) {
     PostMessage(controller, Media, generation, LeanReady);
     return;
   }
+  if (!rejected && directFailedFor != file && wcscmp(forced, L"lean"))
+    directRejected.push_back(file);
   ensureManager();
   leanWorker = std::thread(leanDecode, file, start, generation, manager);
 }
@@ -295,11 +299,6 @@ bool leanAcquire(LONGLONG *pts) {
     context->CopySubresourceRegion(back.Get(), 0, 0, 0, 0, directTexture(), directPendingIndex(), &box);
     *pts = directPts;
     directShow();
-    try {
-      directDecode();
-    } catch (HRESULT) {
-      PostMessage(controller, Media, generation, DirectFailed);
-    }
     return true;
   }
   {
@@ -321,6 +320,18 @@ bool leanAcquire(LONGLONG *pts) {
   leanShown = std::move(frame);
   return true;
 }
+// Decodes the frame after the one just presented, so a slow read never delays a frame that is ready.
+void leanAdvance() {
+  if (!directActive || directPending)
+    return;
+  try {
+    directDecode();
+  } catch (...) {
+    PostMessage(controller, Media, generation, DirectFailed);
+  }
+}
+// False until a frame exists to make a still from.
+bool leanHasFrame() { return directActive || leanShown.sample; }
 void leanSchedule() {
   LONGLONG wait = 20000;
   if (directActive) {

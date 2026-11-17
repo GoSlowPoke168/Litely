@@ -569,10 +569,14 @@ std::wstring conversionCommand(const fs::path &original,int limit,bool cap,const
 bool batteryFps=false,batteryCopyFailed=false;
 HANDLE batteryCopyProcess=nullptr,batteryCopyGroup=nullptr;
 fs::path batteryCopyVideo;
+bool lowestCopy(const fs::path &video){
+  auto stem=video.stem().wstring();
+  return stem.size()>7 && !stem.compare(stem.size()-7,7,L"-lowmem");
+}
 fs::path batteryCopyPath(const fs::path &video){
   std::error_code ignored;
   if(video.empty() || !fs::exists(video,ignored))return {};
-  return copyDirectory(video)/(video.stem().wstring()+L"-original-30fps.mp4");
+  return copyDirectory(video)/(video.stem().wstring()+(lowestCopy(video)?L"-original-30fps-lowmem.mp4":L"-original-30fps.mp4"));
 }
 int testPower=[]{
   wchar_t value[16]{};
@@ -619,7 +623,7 @@ void updateBatteryCopy(){
   if(wanted){readVideoDetails(source,nullptr,nullptr,&rate);wanted=rate>30500;}
   if(batteryCopyProcess && (!wanted || batteryCopyVideo!=source))stopBatteryCopy(true);
   if(!wanted || batteryCopyProcess)return;
-  auto command=conversionCommand(source,0,true,{},copy.parent_path());
+  auto command=conversionCommand(source,0,true,{},copy.parent_path(),lowestCopy(source));
   batteryCopyVideo=source;
   batteryCopyGroup=CreateJobObject(nullptr,nullptr);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};

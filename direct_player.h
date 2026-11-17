@@ -98,35 +98,32 @@ void directSps(const BYTE *nal, size_t size, DirectSps &s) {
   b.u(8);
   s.level = b.u(8);
   b.ue();
-  if (profile == 100 || profile == 110 || profile == 122 || profile == 244 || profile == 44 || profile == 83 ||
-      profile == 86 || profile == 118 || profile == 128) {
-    if (b.ue() != 1 || b.ue() || b.ue())
-      throw E_NOTIMPL;
-    b.bit();
-    if (b.bit())
-      throw E_NOTIMPL;
-  }
-  s.log2FrameNum = b.ue() + 4;
+  if (profile != 66 && profile != 77 && profile != 88 && profile != 100)
+    throw E_NOTIMPL;
+  if (profile == 100 && (b.ue() != 1 || b.ue() || b.ue() || b.bit() || b.bit()))
+    throw E_NOTIMPL;
+  unsigned frameBits = b.ue(), pocBits = 0;
   s.pocType = b.ue();
   if (s.pocType == 0)
-    s.log2PocLsb = b.ue() + 4;
-  else if (s.pocType == 1)
+    pocBits = b.ue();
+  else if (s.pocType != 2)
     throw E_NOTIMPL;
   s.refs = b.ue();
-  b.bit();
+  if (frameBits > 12 || pocBits > 12 || s.refs != 1 || b.bit())
+    throw E_NOTIMPL;
+  s.log2FrameNum = frameBits + 4;
+  s.log2PocLsb = pocBits + 4;
   s.widthMbs = b.ue() + 1;
   s.heightMbs = b.ue() + 1;
-  if (s.refs > 1 || s.log2FrameNum > 16 || s.log2PocLsb > 16 || !s.widthMbs || !s.heightMbs || s.widthMbs > 512 ||
-      s.heightMbs > 512 || !b.bit())
+  if (!s.widthMbs || !s.heightMbs || s.widthMbs > 512 || s.heightMbs > 512 || !b.bit())
     throw E_NOTIMPL;
   s.direct8x8 = b.bit();
   if (b.bit()) {
-    unsigned left = b.ue();
-    s.cropRight = b.ue() * 2;
-    unsigned top = b.ue();
-    s.cropBottom = b.ue() * 2;
-    if (left || top || s.cropRight >= 16 || s.cropBottom >= 16)
+    unsigned left = b.ue(), right = b.ue(), top = b.ue(), bottom = b.ue();
+    if (left || top || right > 7 || bottom > 7)
       throw E_NOTIMPL;
+    s.cropRight = right * 2;
+    s.cropBottom = bottom * 2;
   }
   if (b.bit()) {
     if (b.bit() && b.u(8) == 255)
@@ -157,11 +154,13 @@ void directPps(const BYTE *nal, size_t size, DirectPps &p) {
   p.refL1 = b.ue();
   bool weighted = b.bit() != 0;
   p.weightedBi = b.u(2);
-  if (weighted || p.refL0 > 31 || p.refL1 > 31)
+  if (weighted || p.bottomPoc || p.refL0 > 31 || p.refL1 > 31)
     throw E_NOTIMPL;
   p.qp = b.se();
   p.qs = b.se();
   p.chromaOffset = p.chromaOffset2 = b.se();
+  if (p.qp < -26 || p.qp > 25 || p.qs < -26 || p.qs > 25 || p.chromaOffset < -12 || p.chromaOffset > 12)
+    throw E_NOTIMPL;
   p.deblockControl = b.bit();
   p.constrainedIntra = b.bit();
   p.redundant = b.bit();
@@ -170,6 +169,8 @@ void directPps(const BYTE *nal, size_t size, DirectPps &p) {
     if (b.bit())
       throw E_NOTIMPL;
     p.chromaOffset2 = b.se();
+    if (p.chromaOffset2 < -12 || p.chromaOffset2 > 12)
+      throw E_NOTIMPL;
   }
 }
 // A bounds-checked view of MP4 box contents; numbers are big-endian.
@@ -259,6 +260,8 @@ void directDecode() {
   }
   if (!nal || nalSize < 2)
     throw E_INVALIDARG;
+  if (!(nal[0] & 0x60))
+    throw E_NOTIMPL;
   const bool idr = (nal[0] & 31) == 5;
   DirectBits b(nal + 1, std::min<size_t>(nalSize - 1, 64));
   if (b.ue())
@@ -291,7 +294,7 @@ void directDecode() {
   d.previousFrameNum = frameNum;
   if (!d.hasReference && sliceType != 2)
     throw E_INVALIDARG;
-  const UINT target = d.hasReference ? 1 - d.decoded : 0;
+  const UINT target = d.started ? 1 - d.decoded : 0;
   DXVA_PicParams_H264 pp{};
   pp.wFrameWidthInMbsMinus1 = USHORT(d.sps.widthMbs - 1);
   pp.wFrameHeightInMbsMinus1 = USHORT(d.sps.heightMbs - 1);
@@ -313,7 +316,7 @@ void directDecode() {
   for (auto &entry : pp.RefFrameList)
     entry.bPicEntry = 0xff;
   if (d.hasReference) {
-    pp.RefFrameList[0].Index7Bits = d.decoded;
+    pp.RefFrameList[0].bPicEntry = UCHAR(d.decoded);
     pp.FieldOrderCntList[0][0] = pp.FieldOrderCntList[0][1] = d.referencePoc;
     pp.FrameNumList[0] = USHORT(d.referenceFrameNum);
     pp.UsedForReferenceFlags = 3;
@@ -343,7 +346,14 @@ void directDecode() {
   DXVA_Slice_H264_Short slice{};
   slice.SliceBytesInBuffer = UINT(d.bitstream.size());
   d.bitstream.resize((d.bitstream.size() + 127) / 128 * 128, 0);
-  check(d.videoContext->DecoderBeginFrame(d.decoder.Get(), d.views[target].Get(), 0, nullptr));
+  HRESULT begun = E_PENDING;
+  for (int attempt = 0; attempt < 50; attempt++) {
+    begun = d.videoContext->DecoderBeginFrame(d.decoder.Get(), d.views[target].Get(), 0, nullptr);
+    if (begun != E_PENDING && begun != HRESULT(0x8876021C))
+      break;
+    Sleep(2);
+  }
+  check(begun);
   HRESULT sent = S_OK;
   try {
     D3D11_VIDEO_DECODER_BUFFER_DESC buffers[4];
@@ -399,7 +409,10 @@ bool directOpen(const fs::path &path, double start) {
     LARGE_INTEGER fileSize{};
     check(GetFileSizeEx(d.file, &fileSize) ? S_OK : E_FAIL);
     std::vector<BYTE> index;
+    int boxes = 0;
     for (ULONGLONG at = 0; at + 8 <= ULONGLONG(fileSize.QuadPart);) {
+      if (++boxes > 1024)
+        throw E_NOTIMPL;
       BYTE header[16]{};
       OVERLAPPED where{};
       where.Offset = DWORD(at);
@@ -444,7 +457,7 @@ bool directOpen(const fs::path &path, double start) {
       }
       at += size;
     }
-    if (!table.bytes || !timescale || table.child("ctts").bytes)
+    if (!table.bytes || !timescale || table.child("ctts").bytes || movie.child("mvex").bytes)
       throw E_NOTIMPL;
     DirectBox description = table.child("stsd");
     if (description.u32(4) != 1 || memcmp(description.need(12, 4), "avc1", 4))
@@ -461,13 +474,15 @@ bool directOpen(const fs::path &path, double start) {
     directPps(setup.need(11 + spsSize, ppsSize), ppsSize, d.pps);
     DirectBox times = table.child("stts"), sizes = table.child("stsz"), chunks = table.child("stsc");
     DirectBox offsets32 = table.child("stco"), offsets64 = table.child("co64"), syncs = table.child("stss");
+    if (!times.u32(4))
+      throw E_NOTIMPL;
     UINT delta = times.u32(12);
     for (UINT i = 1; i < times.u32(4); i++)
       if (times.u32(8 + 8 * i + 4) != delta)
         throw E_NOTIMPL;
     UINT fixedSize = sizes.u32(4), count = sizes.u32(8);
     UINT chunkCount = (offsets32.bytes ? offsets32 : offsets64).u32(4), runs = chunks.u32(4);
-    if (!delta || !count || count > 1u << 22 || !chunkCount || !runs)
+    if (!delta || !count || count > 1u << 22 || !chunkCount || !runs || timescale / delta < 1 || timescale / delta > 240)
       throw E_NOTIMPL;
     d.delta = delta;
     d.timescale = timescale;
@@ -479,7 +494,7 @@ bool directOpen(const fs::path &path, double start) {
       ULONGLONG at = offsets32.bytes ? offsets32.u32(8 + 4 * (chunk - 1)) : offsets64.u64(8 + 8 * (chunk - 1));
       for (UINT i = chunks.u32(8 + 12 * run + 4); i && d.samples.size() < count; i--) {
         UINT size = fixedSize ? fixedSize : sizes.u32(12 + 4 * UINT(d.samples.size()));
-        if (size > 64u << 20 || at + size > ULONGLONG(fileSize.QuadPart))
+        if (size > 16u << 20 || at > ULONGLONG(fileSize.QuadPart) || size > ULONGLONG(fileSize.QuadPart) - at)
           throw E_INVALIDARG;
         d.samples.push_back({at, size, !syncs.bytes});
         at += size;
@@ -494,6 +509,12 @@ bool directOpen(const fs::path &path, double start) {
     }
     if (!d.samples[0].sync)
       throw E_NOTIMPL;
+    // Resuming decodes forward from a key frame on the UI thread, so key frames must be close together.
+    for (size_t i = 0, gap = 0; i < d.samples.size(); i++)
+      if (d.samples[i].sync)
+        gap = 0;
+      else if (++gap >= 120)
+        throw E_NOTIMPL;
     directWidth = d.sps.widthMbs * 16 - d.sps.cropRight;
     directHeight = d.sps.heightMbs * 16 - d.sps.cropBottom;
     directRate = double(timescale) / delta;
@@ -536,9 +557,8 @@ bool directOpen(const fs::path &path, double start) {
       check(d.videoDevice->CreateVideoDecoderOutputView(d.surfaces.Get(), &view, &d.views[i]));
     }
     // Start at the first frame at or after the saved position, decoding forward from its key frame.
-    size_t wanted = size_t(std::max(0.0, std::ceil(start * timescale / delta - 0.001)));
-    if (wanted >= count)
-      wanted = 0;
+    double first = std::ceil(start * timescale / delta - 0.001);
+    size_t wanted = first > 0 && first < count ? size_t(first) : 0;
     size_t key = wanted;
     while (!d.samples[key].sync)
       --key;

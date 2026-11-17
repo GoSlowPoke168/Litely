@@ -19,6 +19,25 @@ The supplied 720p and 1080p copies retain Furina's 30 fps and Miyabi's 60 fps. C
 
 The Library's **Add MP4** wizard can make a 1080p, 720p or 30 fps playback copy with live progress and an estimated memory saving. To prepare one by hand, run `python optimize.py "C:\path\file.mp4" --height 720`. The offline tool requires FFmpeg on PATH or the Python imageio-ffmpeg package. It writes a new file to `build\wallpapers`. Playback requires neither Python nor FFmpeg.
 
+## Measured savings
+
+Process CPU, working-set RAM and local GPU memory while playing at 1080p. Medians of three 20-second runs per player in one session on November 17, 2026: RTX 4060 laptop, laptop panel plus one external monitor. Percentages are against the original player.
+
+| Clip | Player | CPU (one core) | RAM | GPU memory | File |
+| --- | --- | --- | --- | --- | --- |
+| Miyabi 60 fps | Original (Media Engine) | 15.1% | 110 MiB | 59.5 MiB | 7.0 MiB |
+| Miyabi 60 fps | Lean player | 10.5% (−30%) | 79 MiB (−29%) | 48.5 MiB (−18%) | 7.0 MiB |
+| Miyabi 60 fps | Lowest memory | 8.8% (−42%) | 64 MiB (−42%) | 21.6 MiB (−64%) | 21.3 MiB |
+| Furina 30 fps | Original (Media Engine) | 8.2% | 85 MiB | 59.5 MiB | 4.4 MiB |
+| Furina 30 fps | Lean player | 5.5% (−33%) | 72 MiB (−16%) | 48.5 MiB (−18%) | 4.4 MiB |
+| Furina 30 fps | Lowest memory | 4.9% (−40%) | 62 MiB (−27%) | 21.6 MiB (−64%) | 13.4 MiB |
+
+- The lean player plays the original file untouched. Lowest memory plays a converted copy: about three times larger, colours and edges unchanged, fine grain slightly smoothed (VMAF about 96.5 against the source for Miyabi).
+- No late frames in any run. All three show the same picture for the same file.
+- The original player's cost varies with the display setup: with only the laptop panel attached it measured 21.0% and 158 MiB on Miyabi, so the savings there are larger. The other two barely change.
+- At 2160p the lean player used 173 MiB of GPU memory and Lowest memory 65 MiB.
+- One PC, one GPU. Lowest memory is untested on Intel and AMD graphics; it falls back to the lean player if it cannot run.
+
 ## Build and test
 
 Run `build.cmd` with the Visual Studio C++ desktop tools and the Windows SDK installed. The output is a standalone x64 Windows executable when built with the x64 toolchain.

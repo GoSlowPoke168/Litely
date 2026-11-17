@@ -146,6 +146,7 @@ void memory(const wchar_t *label) {
 using Clock = std::chrono::steady_clock;
 HANDLE surfaceHandle;
 fs::path leanFailedFor, directFailedFor;
+std::vector<fs::path> directRejected;
 std::wstring playbackPath;
 #include "direct_player.h"
 #include "lean_player.h"
@@ -573,6 +574,10 @@ void draw() {
     leanDropStill();
   }
   check(chain->Present(0, 0));
+  if (directActive) {
+    leanAdvance();
+    leanSchedule();
+  }
   if (!presented && probe)
     report << L"resume offset (ms): " << (pts / 1e7 - position) * 1000
            << std::endl;
@@ -672,7 +677,7 @@ void freeze(bool manual = true) {
     finishPause();
     return;
   }
-  if (!presented) {
+  if (!presented || (leanActive && !leanHasFrame())) {
     freezePending = true;
     if (!ready)
       openPlayer();
@@ -903,6 +908,7 @@ void activateSource(const fs::path &path) {
   closePlayer();
   leanFailedFor.clear();
   directFailedFor.clear();
+  directRejected.clear();
   source = path;
   preparePoster(true);
   position = 0;
