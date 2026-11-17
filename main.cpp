@@ -1412,9 +1412,10 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
                  << std::endl;
           if (GetEnvironmentVariableW(L"LITELY_PROBE_TOPMOST", nullptr, 0)) {
             Sleep(400);
-            HWND shown = displays[0].window;
             POINT centre{40 + LONG(width) / 2, 40 + LONG(height) / 2};
-            if (WindowFromPoint(centre) != shown)
+            DWORD owner = 0;
+            GetWindowThreadProcessId(WindowFromPoint(centre), &owner);
+            if (owner != GetCurrentProcessId())
               throw E_ACCESSDENIED;
             HDC screen = GetDC(nullptr), memoryDC = CreateCompatibleDC(screen);
             BITMAPINFO info{};

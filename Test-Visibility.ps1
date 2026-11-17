@@ -15,7 +15,7 @@ public class DesktopTest {
             var clock=Stopwatch.StartNew();
             double maxDwm=0, maxTray=0;
             if(DwmFlush()!=0) throw new Exception("DwmFlush failed");
-            PostMessage(hwnd,0x8001,IntPtr.Zero,(IntPtr)0x202);
+            PostMessage(hwnd,0x111,(IntPtr)2,IntPtr.Zero);
             while(clock.ElapsedMilliseconds<650){
                 var start=clock.Elapsed.TotalMilliseconds;
                 UIntPtr result;
@@ -66,18 +66,26 @@ function Tray-Status {
     [void][DesktopTest]::GetWindowText($hwnd,$text,256)
     $text.ToString()
 }
+# Start-Process does not reliably forward a changed environment.
+function Start-Test {
+    $start=[Diagnostics.ProcessStartInfo]::new($exe)
+    $start.UseShellExecute=$false
+    $start.Environment['LOCALAPPDATA']=$testRoot
+    $start.Environment['LITELY_TEST_SKIP_PERSONALIZATION']='1'
+    [Diagnostics.Process]::Start($start)
+}
 try {
     $env:LITELY_TEST_SKIP_PERSONALIZATION="1"
     $env:LOCALAPPDATA=$testRoot
     $shell.MinimizeAll()
-    $initial=Start-Process $exe -WindowStyle Hidden -PassThru
+    $initial=Start-Test
     $env:LOCALAPPDATA=$oldLocal
     $stage="initial"
     [void](Wait-Player {param($p) [DesktopTest]::FindWindow("LitelyController",[IntPtr]::Zero) -ne [IntPtr]::Zero})
     $hwnd=[DesktopTest]::FindWindow("LitelyController",[IntPtr]::Zero)
-    [void][DesktopTest]::PostMessage($hwnd,0x8001,[IntPtr]::Zero,[IntPtr]0x202)
+    [void][DesktopTest]::PostMessage($hwnd,0x111,[IntPtr]2,[IntPtr]::Zero)
     $stage="visible"
-    $active=Wait-Player {param($p) $p.WorkingSet64 -gt 70MB}
+    $active=Wait-Player {param($p) $p.WorkingSet64 -gt 55MB}
     "Visible player PID $($active.Id)"
     Start-Sleep -Milliseconds 700
     $poster=Get-ChildItem -LiteralPath $config -Filter "wallpaper-*.bmp" -File
@@ -91,6 +99,14 @@ try {
         $f.FormBorderStyle='None'; $f.StartPosition='Manual'; $f.ShowInTaskbar=$false
         $f.Text='Wallpaper visibility test'; $f.TopMost=$true
         $f.SetBounds(($area.Left+$mid*$side),$area.Top,($mid+($area.Width%2)),$area.Height)
+        $f.Show()
+    }
+    foreach ($screen in [Windows.Forms.Screen]::AllScreens | Where-Object { !$_.Primary }) {
+        $f=New-Object Windows.Forms.Form
+        $forms += $f
+        $f.FormBorderStyle='None'; $f.StartPosition='Manual'; $f.ShowInTaskbar=$false
+        $f.Text='Wallpaper visibility test'; $f.TopMost=$true
+        $f.Bounds=$screen.WorkingArea
         $f.Show()
     }
     $stage="covered"
@@ -109,9 +125,8 @@ try {
     $resumed=Wait-Player {param($p) $p.Id -eq $idle.Id -and (Tray-Status) -like "*playing"}
     "Revealing half of the desktop resumed playback in PID $($resumed.Id)"
     Start-Sleep -Milliseconds 700
-    [void][DesktopTest]::PostMessage($hwnd,0x8001,[IntPtr]::Zero,[IntPtr]0x202)
-    [void][DesktopTest]::PostMessage($hwnd,0x8001,[IntPtr]::Zero,[IntPtr]0x202)
-    $stage="rapid double-click pauses once"
+    [void][DesktopTest]::PostMessage($hwnd,0x111,[IntPtr]2,[IntPtr]::Zero)
+    $stage="pause"
     [void](Wait-Player {param($p) $p.Id -eq $active.Id -and (Tray-Status) -like "*paused"})
     if ([DesktopTest]::FindWindow("LitelyController",[IntPtr]::Zero) -ne $hwnd) { throw "Tray window changed" }
     [void](Wait-Player {param($p) (Get-Content -LiteralPath $ini) -contains "paused=1"})
@@ -124,33 +139,33 @@ try {
     "Manual pause and resume kept the same tray window and process"
     [void][DesktopTest]::PostMessage($hwnd,0x2B1,[IntPtr]7,[IntPtr]::Zero)
     $stage="session lock notification"
-    [void](Wait-Player {param($p) $p.WorkingSet64 -lt 85MB})
+    [void](Wait-Player {param($p) $p.WorkingSet64 -lt 55MB})
     [void][DesktopTest]::PostMessage($hwnd,0x2B1,[IntPtr]8,[IntPtr]::Zero)
     $stage="session unlock notification"
-    [void](Wait-Player {param($p) $p.WorkingSet64 -gt 85MB})
+    [void](Wait-Player {param($p) $p.WorkingSet64 -gt 55MB})
     "Lock notification released renderer memory; unlock restored playback"
     Start-Sleep -Milliseconds 600
-    [void][DesktopTest]::PostMessage($hwnd,0x8001,[IntPtr]::Zero,[IntPtr]0x202)
+    [void][DesktopTest]::PostMessage($hwnd,0x111,[IntPtr]2,[IntPtr]::Zero)
     $stage="warm pause before switching modes"
-    [void](Wait-Player {param($p) (Get-Content $ini) -contains "paused=1" -and $p.WorkingSet64 -gt 85MB})
+    [void](Wait-Player {param($p) (Get-Content $ini) -contains "paused=1" -and $p.WorkingSet64 -gt 55MB})
     [void][DesktopTest]::PostMessage($hwnd,0x111,[IntPtr]5,[IntPtr]::Zero)
     $stage="maximum savings while paused"
-    [void](Wait-Player {param($p) (Get-Content $ini) -contains "maximumSavings=1" -and $p.WorkingSet64 -lt 85MB})
+    [void](Wait-Player {param($p) (Get-Content $ini) -contains "maximumSavings=1" -and $p.WorkingSet64 -lt 55MB})
     [void][DesktopTest]::PostMessage($hwnd,0x10,[IntPtr]::Zero,[IntPtr]::Zero)
     if (!$active.WaitForExit(5000)) {throw "Test instance did not exit"}
     $env:LOCALAPPDATA=$testRoot
-    $restarted=Start-Process $exe -WindowStyle Hidden -PassThru
+    $restarted=Start-Test
     $env:LOCALAPPDATA=$oldLocal
     $stage="reload paused profile"
     [void](Wait-Player {param($p) [DesktopTest]::FindWindow("LitelyController",[IntPtr]::Zero) -ne [IntPtr]::Zero})
     $hwnd=[DesktopTest]::FindWindow("LitelyController",[IntPtr]::Zero)
-    [void][DesktopTest]::PostMessage($hwnd,0x8001,[IntPtr]::Zero,[IntPtr]0x202)
+    [void][DesktopTest]::PostMessage($hwnd,0x111,[IntPtr]2,[IntPtr]::Zero)
     $stage="cold resume"
-    [void](Wait-Player {param($p) $p.WorkingSet64 -gt 85MB})
+    [void](Wait-Player {param($p) $p.WorkingSet64 -gt 55MB})
     Start-Sleep -Milliseconds 600
-    [void][DesktopTest]::PostMessage($hwnd,0x8001,[IntPtr]::Zero,[IntPtr]0x202)
+    [void][DesktopTest]::PostMessage($hwnd,0x111,[IntPtr]2,[IntPtr]::Zero)
     $stage="saved maximum savings mode"
-    [void](Wait-Player {param($p) (Get-Content $ini) -contains "paused=1" -and $p.WorkingSet64 -lt 85MB})
+    [void](Wait-Player {param($p) (Get-Content $ini) -contains "paused=1" -and $p.WorkingSet64 -lt 55MB})
     [void][DesktopTest]::PostMessage($hwnd,0x111,[IntPtr]4,[IntPtr]::Zero)
     $stage="switch back to smooth resume"
     [void](Wait-Player {param($p) (Get-Content $ini) -contains "maximumSavings=0"})

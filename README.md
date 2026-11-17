@@ -4,6 +4,7 @@ Open `build\Litely.exe` and choose an MP4. The first file picker opens the prepa
 
 - Left- or right-click the tray icon to open its menu. Pause, resume, choose a video or exit from there.
 - Right-click the tray icon and open **Performance** to choose **Smooth resume** (default) or **Maximum savings**. Maximum savings releases the renderer after manual pause or two seconds of complete desktop coverage. Smooth resume keeps it ready. Both modes keep the video frame rate and remember your choice across restarts.
+- **Settings > 30 fps on battery** (off by default) makes a 30 fps copy of the active wallpaper once, in the background, and plays it while on battery. It needs Python with FFmpeg.
 - Choosing a video also sets a still from it as the Windows wallpaper, even when the desktop is covered. Re-selecting the same file reuses its saved image. Windows displays that still while the player starts.
 - Manual pause saves the video frame as a BMP, makes it the Windows Fill wallpaper on all monitors, and stops the playback clock. That still remains after exit.
 - Litely keeps its stills out of Settings > Personalization > Background > Recent images.

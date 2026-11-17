@@ -40,6 +40,10 @@ The Library shows process CPU, working-set RAM, and local GPU allocation. Its sa
 
 User data lives in `%LOCALAPPDATA%\Litely`. `settings.ini` stores active playback state and preferences, `library.txt` is a UTF-16 path list, and `library-names.ini` stores display names by per-path key. Desktop stills use `wallpaper-*.bmp`, library stills use `*.preview.bmp`, and converted copies live in `optimized\`. Use disposable files for import/remove tests.
 
+## Next project
+
+Stage 2 of `docs/superpowers/specs/2026-11-16-lean-player-design.md`: prototype a decoder that drives the GPU's H.264 decode API directly and measure it against the lean path (estimate to confirm or refute: about 6% of a core, 40 MiB RAM, 23 MiB GPU at 1080p60). The Media Foundation decoder keeps reference frames + 7 surfaces and ignores pool hints, which is where most remaining GPU memory goes. If it holds up, add a first-run calibration that times the available paths.
+
 ## Regression details and evidence
 
 - Keep `WS_EX_COMPOSITED` off the native list box. Owner-drawn rows, buttons and choices paint into a temporary bitmap and blit once.
@@ -48,14 +52,20 @@ User data lives in `%LOCALAPPDATA%\Litely`. `settings.ini` stores active playbac
 - Shapes use `fillRound`/`strokeRound`/`roundCorners`, which draw in device pixels from 96-dpi units. Dialogs paint under `DpiScope` with their own DPI.
 - Explorer writes `BackgroundHistoryPathN` after `SetWallpaper` returns. The main loop therefore waits on a registry-change event and drops paths inside the data folder.
 - The import estimate model (GPU ≈ 8 + 19.8 MiB/Mpx, RAM ≈ 62 + 9.5 MiB/Mpx) was fitted to 20 s lean-path `Test-Playback.ps1` runs at 720p–2160p on one PC. GPU fits within 3%; RAM is not linear in pixels and only holds within 15%. Frame rate changed CPU only.
-- `Test-Savings.ps1` (medians of five 20 s runs, lean vs Media Engine, November 16): Miyabi 1080p60 CPU 13.4% vs 21.0% of a core, RAM 81.8 vs 158.4 MiB, GPU 48.5 vs 59.5 MiB; Furina 1080p30 CPU 5.9% vs 10.2%, RAM 74.6 vs 126.7 MiB, GPU 48.5 vs 59.5 MiB. Zero late frames; stills and on-screen pixels identical.
+- `Test-Savings.ps1` (medians of five 20 s runs, lean vs Media Engine, November 16): Miyabi 1080p60 CPU 13.4% vs 21.0% of a core, RAM 81.8 vs 158.4 MiB, GPU 48.5 vs 59.5 MiB; Furina 1080p30 CPU 5.9% vs 10.2%, RAM 74.6 vs 126.7 MiB, GPU 48.5 vs 59.5 MiB. Zero late frames; stills and on-screen pixels identical. Those figures were taken with only the laptop panel attached. With an external monitor also attached the same evening, the Media Engine path measured much cheaper (Miyabi CPU 13.0%, RAM 121 MiB; Furina CPU 7.3%, RAM 90 MiB) while the lean path was unchanged (11.1% and 84 MiB; 7.1% and 77 MiB), so `Test-Savings.ps1` failed its CPU and RAM limits in that configuration. GPU memory (0.82×) and pixel checks held in both. The cause of the Media Engine's change is not understood.
 - Lean-path lessons: the decode and UI threads run in the MMCSS Playback class, because a background process otherwise stalls 17–45 ms. `IDXGIDevice3::Trim` doubled playback CPU and must stay out. A delay of one refresh is `Present` waiting on the display, so only delays over 1.5 frames count as late. Working set settles about 20 MiB lower after 20 s than at 4 s.
 - Probe variables: `LITELY_PROBE_SECONDS` (sample length), `LITELY_PROBE_TOPMOST` (1:1 topmost window plus a screen grab). Test hooks: `LITELY_TEST_VISIBLE` (treat the desktop as uncovered), controller `WM_COMMAND` 2 (pause/resume). `Test-Stress.ps1` uses a temporary `LOCALAPPDATA`; pass it with `ProcessStartInfo`, since `Start-Process` does not forward a changed environment reliably.
 - Conversion runs in a kill-on-close job object. `optimize.py --progress` forwards to FFmpeg `-progress`. Cancel removes scratch folders.
 - A popup reading "could not complete that action" now includes its HRESULT. The suspected cause, a failed BMP replace, now retries for up to 500 ms.
 
+## Battery mode
+
+**30 fps on battery** (`batteryFps` in `settings.ini`, off by default) makes `optimized\<key>\<mtime>\<name>-original-30fps.mp4` with `optimize.py --height 0 --cap-fps` in a below-normal, kill-on-close job. The main loop waits on the job's process handle. `playFile()` returns the copy when the setting is on, the PC is on battery and the copy exists; `updatePlayFile()` restarts only the decode thread at the current position, so the swap chain and last frame stay. On the fallback path it reopens the player. A failed job shows "Couldn't make the 30 fps copy. Needs Python with FFmpeg." for the session.
+
+Test hooks: `LITELY_TEST_POWER=ac|battery` enables simulated power and controller message `WM_APP+5` (wParam 0 AC, 1 battery); `LITELY_TEST_LOG` appends one `swap <file> at <position> first <pts> kept|reopened` line per swap. `Test-BatteryCopy.ps1` and `Test-BatterySwitch.ps1` cover creation, reuse, cancellation, switching and a deleted copy.
+
 ## Next verification
 
 1. Import, conversion, Cancel, rename and remove were verified on November 16 by filling the picker's filename box. Check them once by hand with a real video, and watch for any reappearance of the error popup and its code.
 2. Rename a disposable wallpaper, restart the tray process, verify the name, then remove it and confirm the source MP4 remains. Check mouse hover and keyboard focus on the live dialogs.
-3. For playback changes, run `.\Test-Playback.ps1 .\build\wallpapers\hoshimi-miyabi-720p.mp4`. The visibility test temporarily rearranges windows. Mixed-DPI monitors, three-monitor playback, physical Energy Saver transitions, and the exact trigger of a previously reported 0x80004005 playback error remain unverified.
+3. For playback changes, run `.\Test-Playback.ps1 .\build\wallpapers\hoshimi-miyabi-1080p.mp4` with `-Pipeline lean` and `-Pipeline legacy`, then `Test-Savings.ps1` and `Test-Stress.ps1`. `Test-Visibility.ps1` now covers every monitor and pauses with controller `WM_COMMAND` 2; it passed on November 16 with two monitors on the lean path. The visibility test temporarily rearranges windows. Not verified: a real unplug (power changes were simulated), the Energy Saver rule taking precedence over 30 fps mode, 100% display scaling for the Settings readout, a hybrid-GPU configuration where the Intel adapter drives the panel, mixed-DPI monitors, three-monitor playback, physical Energy Saver transitions, and the exact trigger of a previously reported 0x80004005 playback error remain unverified.
