@@ -63,9 +63,26 @@ struct UiDC {
   ~UiDC(){RestoreDC(dc,saved);}
 };
 constexpr COLORREF cWindow=RGB(25,27,37),cSidebar=RGB(23,25,35),cRaised=RGB(38,40,54),
-  cHover=RGB(42,43,57),cLine=RGB(52,53,65),cSelected=RGB(48,44,64),cSelectedLine=RGB(85,70,96),
-  cAccent=RGB(215,196,255),cAccentHot=RGB(230,216,255),cAccentDown=RGB(193,167,241),cInk=RGB(36,27,53),
+  cHover=RGB(42,43,57),cLine=RGB(52,53,65),cInk=RGB(36,27,53),
   cText=RGB(245,243,250),cSoft=RGB(217,215,225),cMuted=RGB(172,174,191),cDisabled=RGB(121,115,134);
+// The accent and everything tinted by it; setAccent derives the family from one light colour.
+constexpr COLORREF defaultAccent=RGB(215,196,255);
+COLORREF cAccent,cAccentHot,cAccentDown,cAccentOff,cAccentPress,cSelected,cSelectedLine;
+void setAccent(COLORREF a){
+  cAccent=a;
+  cAccentHot=mixColor(a,RGB(255,255,255),.3);
+  cAccentDown=mixColor(a,RGB(0,0,0),.1);
+  cAccentOff=mixColor(cWindow,a,.25);
+  cAccentPress=mixColor(cWindow,a,.17);
+  cSelected=mixColor(cWindow,a,.12);
+  cSelectedLine=mixColor(cWindow,a,.3);
+}
+const bool accentReady=(setAccent(defaultAccent),true);
+constexpr COLORREF accentPresets[8]={RGB(215,196,255),RGB(169,199,255),RGB(143,224,214),RGB(174,227,162),
+                                     RGB(246,211,138),RGB(255,181,156),RGB(255,177,193),RGB(245,179,236)};
+int accentMode=0;
+RECT swatchRect(int k);
+COLORREF accentPick=defaultAccent;
 bool fontExists(const wchar_t *family){
   HDC dc=GetDC(nullptr);LOGFONT query{};query.lfCharSet=DEFAULT_CHARSET;wcscpy_s(query.lfFaceName,family);
   bool found=false;
@@ -393,8 +410,8 @@ struct ButtonStyle{bool primary;COLORREF background;const wchar_t *icon=nullptr;
 void drawButton(HDC dc,const DRAWITEMSTRUCT &d,RECT r,const ButtonStyle &style){
   bool down=(d.itemState&ODS_SELECTED)!=0,disabled=(d.itemState&ODS_DISABLED)!=0,hot=!disabled && hovered(d.hwndItem);
   fillRect(dc,r,style.background);
-  if(style.primary)fillRound(dc,r,disabled?RGB(74,68,92):down?cAccentDown:hot?cAccentHot:cAccent,7);
-  else if(down || hot)fillRound(dc,r,down?RGB(62,54,78):cHover,7);
+  if(style.primary)fillRound(dc,r,disabled?cAccentOff:down?cAccentDown:hot?cAccentHot:cAccent,7);
+  else if(down || hot)fillRound(dc,r,down?cAccentPress:cHover,7);
   if(style.outline && !disabled)strokeRound(dc,r,cLine,7,1);
   wchar_t text[128];GetWindowText(d.hwndItem,text,128);
   auto ink=disabled?cDisabled:style.primary?cInk:style.tint!=CLR_INVALID?style.tint:cSoft;
@@ -979,6 +996,28 @@ void updateActionLabel(){
   if(!!IsWindowEnabled(remove)!=(i>=0))EnableWindow(remove,i>=0);
 }
 void applySide(int wanted,bool full);
+// The Settings page scrolls below the back button; rows passing under it are clipped, not drawn over it.
+double settingsOffset=0,settingsTarget=0;
+Clock::time_point settingsTick;
+bool settingsMoving=false;
+constexpr int settingsTop=116,settingsBottom=778;
+int settingsLimit(int heightDip){return std::max(0,settingsBottom-heightDip);}
+void clipSettings(){
+  for(int id:{103,104,105,111,112,113}){
+    HWND row=GetDlgItem(libraryWindow,id);
+    RECT box;GetWindowRect(row,&box);MapWindowPoints(nullptr,libraryWindow,(POINT*)&box,2);
+    bool show=settingsPage && box.bottom>px(settingsTop);
+    if(!!IsWindowVisible(row)!=show)ShowWindow(row,show?SW_SHOWNA:SW_HIDE);
+    int cut=px(settingsTop)-box.top;
+    SetWindowRgn(row,show && cut>0?CreateRectRgn(0,cut,box.right-box.left,box.bottom-box.top):nullptr,FALSE);
+  }
+}
+void scrollSettings(double target){
+  RECT client;GetClientRect(libraryWindow,&client);
+  settingsTarget=std::clamp(target,0.,(double)settingsLimit(dip(client.bottom)));
+  if(!settingsMoving){settingsMoving=true;settingsTick=Clock::now();}
+  SetTimer(libraryWindow,8,USER_TIMER_MINIMUM,nullptr);
+}
 void setUiPage(bool settings) {
   bool restore=settings && sideFull;
   if(restore){sideFull=mainOff=false;sideWidth=sideLast;}
@@ -986,7 +1025,8 @@ void setUiPage(bool settings) {
   titleHot = false;
   ShowWindow(GetDlgItem(libraryWindow, 102), !settings && (!mainOff || sideFull) ? SW_SHOW : SW_HIDE);
   ShowWindow(GetDlgItem(libraryWindow, 109), !settings && !mainOff ? SW_SHOW : SW_HIDE);
-  for (int id : {103, 104, 105, 107, 111})
+  if(settings)settingsOffset=settingsTarget=0;
+  for (int id : {103, 104, 105, 107, 111, 112, 113})
     ShowWindow(GetDlgItem(libraryWindow, id), settings ? SW_SHOW : SW_HIDE);
   SendMessage(GetDlgItem(libraryWindow, 103), BM_SETCHECK,
               maximumSavings ? BST_UNCHECKED : BST_CHECKED, 0);
@@ -996,7 +1036,9 @@ void setUiPage(bool settings) {
               batteryRule ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessage(GetDlgItem(libraryWindow, 111), BM_SETCHECK,
               batteryFps ? BST_CHECKED : BST_UNCHECKED, 0);
-  for(int id:{103,104,105,106,111})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
+  SendMessage(GetDlgItem(libraryWindow, 112), BM_SETCHECK, accentMode ? BST_UNCHECKED : BST_CHECKED, 0);
+  SendMessage(GetDlgItem(libraryWindow, 113), BM_SETCHECK, accentMode ? BST_CHECKED : BST_UNCHECKED, 0);
+  for(int id:{103,104,105,106,111,112,113})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
   InvalidateRect(libraryWindow, nullptr, FALSE);
   if(restore){RECT client;GetClientRect(libraryWindow,&client);SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));}
 }
@@ -1006,6 +1048,15 @@ double scrollOffset=0,scrollTarget=0;
 Clock::time_point scrollTick;
 bool scrollMoving=false,scrollHot=false,scrollDragging=false,hotMore=false;
 int scrollGrab=0,menuHot=-1;
+// How far each tile is lifted by hover, 0 to 1; animated by the list's timer 2.
+std::vector<float> lift;
+Clock::time_point liftTick;
+bool lifting=false;
+void startLift(){
+  if(!libraryScroll)return;
+  if(!lifting){lifting=true;liftTick=Clock::now();}
+  SetTimer(libraryScroll,2,USER_TIMER_MINIMUM,nullptr);
+}
 bool playbackBusy(){
   static const bool forced=GetEnvironmentVariableW(L"LITELY_TEST_BUSY",nullptr,0)!=0;
   return forced || applyingPause || freezePending || (!paused && !batteryOverride && !covered && !source.empty() && !presented);
@@ -1061,8 +1112,19 @@ int cellAt(POINT p){
   int i=(int)((p.y+std::lround(scrollOffset))/c.tall)*c.cols+p.x/c.wide;
   return i<(int)libraryFiles.size()?i:-1;
 }
-RECT moreRect(int i){
+float liftAmount(int i){
+  float t=i>=0 && i<(int)lift.size()?lift[i]:0;
+  return t*t*(3-2*t);
+}
+// A lifted tile grows about 4% around its centre and rises 2 units.
+RECT liftedRect(int i){
   RECT cell=cellRect(i);
+  float e=liftAmount(i);
+  int growX=(int)std::lround((cell.right-cell.left)*.02f*e),growY=(int)std::lround((cell.bottom-cell.top)*.02f*e),rise=(int)std::lround(px(2)*e);
+  return {cell.left-growX,cell.top-growY-rise,cell.right+growX,cell.bottom+growY-rise};
+}
+RECT moreRect(int i){
+  RECT cell=liftedRect(i);
   return {cell.right-px(42),cell.top+px(14),cell.right-px(14),cell.top+px(42)};
 }
 void selectRow(int i,bool notify){
@@ -1235,9 +1297,15 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     int count=(int)libraryFiles.size(),offset=(int)std::lround(scrollOffset);
     if((int)rowCache.size()<count)rowCache.resize(count);
     if((int)tileImages.size()<count)tileImages.resize(count);
+    if((int)lift.size()<count)lift.resize(count);
+    std::vector<int> raised;
     for(int i=0;i<count;i++){
       int x=i%c.cols*c.wide,y=i/c.cols*c.tall-offset;
       if(y+c.tall<=0 || y>=r.bottom)continue;
+      if(grid && !fastDraw && lift[i]>.001f){
+        if(i==hoveredRow)raised.push_back(i);else raised.insert(raised.begin(),i);
+        continue;
+      }
       unsigned key=cellKey(i,grid,focus);
       auto &kept=rowCache[i];
       if(!kept.bitmap || kept.key!=key || kept.wide!=c.wide || kept.tall!=c.tall){
@@ -1255,6 +1323,21 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
       BitBlt(buffer,x,y,c.wide,c.tall,cell,0,0,SRCCOPY);
       SelectObject(cell,before);
     }
+    for(int i:raised){
+      // Drawn last and at its lifted size, over a soft shadow; only the card is copied, so neighbours stay visible.
+      RECT box=liftedRect(i);
+      int wide=box.right-box.left,tall=box.bottom-box.top;
+      float e=liftAmount(i);
+      for(int k=4;k>=1;k--){
+        RECT shade{dip(box.left)+4-k*2,dip(box.top)+4+k,dip(box.right)-4+k*2,dip(box.bottom)+2+k*2};
+        fillRound(buffer,shade,RGB(0,0,0),12,(BYTE)(16*e));
+      }
+      HBITMAP image=CreateCompatibleBitmap(dc,wide,tall);
+      auto before=SelectObject(cell,image);
+      drawCell(cell,{0,0,dip(wide),dip(tall)},i,i==selectedRow,i==hoveredRow,i==hoveredRow && hotMore,i==selectedRow && focus,true);
+      TransparentBlt(buffer,box.left,box.top,wide,tall,cell,0,0,wide,tall,cSidebar);
+      SelectObject(cell,before);DeleteObject(image);
+    }
     RECT thumb=scrollThumb();
     if(thumb.bottom>thumb.top)
       fillRound(buffer,{dip(thumb.left),dip(thumb.top),dip(thumb.right),dip(thumb.bottom)},scrollHot||scrollDragging?cMuted:cLine,2);
@@ -1266,6 +1349,20 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     closeTileMenu();
     scrollTo(scrollTarget-GET_WHEEL_DELTA_WPARAM(a)/120.*px(96),true);return 0;
   case WM_TIMER:{
+    if(a==2){
+      auto now=Clock::now();
+      float step=(float)(std::chrono::duration<double,std::milli>(now-liftTick).count()/200);
+      liftTick=now;
+      bool moving=false;
+      if(lift.size()<libraryFiles.size())lift.resize(libraryFiles.size());
+      for(int i=0;i<(int)lift.size();i++){
+        float target=i==hoveredRow && gridMode() && !fastDraw?1.f:0.f;
+        if(lift[i]!=target){lift[i]=target>lift[i]?std::min(target,lift[i]+step):std::max(target,lift[i]-step);moving=true;}
+      }
+      if(!moving){KillTimer(w,2);lifting=false;}
+      InvalidateRect(w,nullptr,FALSE);UpdateWindow(w);
+      return 0;
+    }
     // Eased by elapsed time, so uneven timer ticks still move evenly.
     auto now=Clock::now();
     double gap=scrollTarget-scrollOffset,step=1-std::exp(-std::chrono::duration<double,std::milli>(now-scrollTick).count()/55);
@@ -1321,13 +1418,16 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     }
     int hit=cellAt(p);bool more=false,bar=scrollLimit() && p.x>=r.right-px(10);
     if(hit>=0 && gridMode()){RECT dots=moreRect(hit);more=PtInRect(&dots,p)!=0;}
-    if(hit!=hoveredRow || more!=hotMore || bar!=scrollHot){hoveredRow=hit;hotMore=more;scrollHot=bar;InvalidateRect(w,nullptr,FALSE);}
+    if(hit!=hoveredRow){hoveredRow=hit;startLift();}
+    if(more!=hotMore || bar!=scrollHot){hotMore=more;scrollHot=bar;InvalidateRect(w,nullptr,FALSE);}
     TRACKMOUSEEVENT leave{sizeof leave,TME_LEAVE,w,0};TrackMouseEvent(&leave);
     return 0;
   }
   case WM_LBUTTONUP:if(scrollDragging){scrollDragging=false;ReleaseCapture();InvalidateRect(w,nullptr,FALSE);}return 0;
   case WM_MOUSELEAVE:
-    if(!tileMenu){hoveredRow=-1;hotMore=false;}
+    // Test hook: LITELY_TEST_HOVER keeps a simulated hover, which the real cursor would otherwise cancel.
+    static const bool holdHover=GetEnvironmentVariableW(L"LITELY_TEST_HOVER",nullptr,0)!=0;
+    if(!tileMenu && !holdHover){hoveredRow=-1;hotMore=false;startLift();}
     scrollHot=false;InvalidateRect(w,nullptr,FALSE);return 0;
   }
   return DefWindowProc(w,m,a,b);
@@ -1386,6 +1486,10 @@ LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR
   int id=GetDlgCtrlID(w);
   // These controls paint every pixel themselves, so an erase would only flash the old background.
   if(m==WM_ERASEBKGND)return 1;
+  if(id==113 && m==WM_LBUTTONUP){
+    POINT at{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
+    for(int k=0;k<8;k++){RECT box=swatchRect(k);InflateRect(&box,3,3);if(PtInRect(&box,at))accentPick=accentPresets[k];}
+  }
   if(m==WM_LBUTTONDOWN)SendMessage(GetParent(w),WM_CHANGEUISTATE,MAKEWPARAM(UIS_SET,UISF_HIDEFOCUS),0);
   if(m==WM_MOUSEMOVE){
     TRACKMOUSEEVENT query{sizeof query,TME_QUERY,w,0};
@@ -1401,7 +1505,99 @@ LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR
 void refreshSettings(){
   if(libraryWindow)InvalidateRect(GetDlgItem(libraryWindow,111),nullptr,FALSE);
 }
+COLORREF hlsColor(double hue,double light,double saturation){
+  auto channel=[&](double t){
+    double q=light<.5?light*(1+saturation):light+saturation-light*saturation,p=2*light-q;
+    t=t-std::floor(t);
+    double v=t<1/6.?p+(q-p)*6*t:t<.5?q:t<2/3.?p+(q-p)*(2/3.-t)*6:p;
+    return (BYTE)std::lround(v*255);
+  };
+  return RGB(channel(hue+1/3.),channel(hue),channel(hue-1/3.));
+}
+// The strongest vivid hue in the image, as a light tone so dark button text stays readable.
+COLORREF wallpaperAccent(const fs::path &image){
+  Gdiplus::Bitmap file(image.c_str());
+  if(file.GetLastStatus()!=Gdiplus::Ok)return CLR_INVALID;
+  Gdiplus::Bitmap tiny(64,36,PixelFormat32bppARGB);
+  {Gdiplus::Graphics g(&tiny);g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);g.DrawImage(&file,0,0,64,36);}
+  Gdiplus::BitmapData data{};Gdiplus::Rect all(0,0,64,36);
+  if(tiny.LockBits(&all,Gdiplus::ImageLockModeRead,PixelFormat32bppARGB,&data)!=Gdiplus::Ok)return CLR_INVALID;
+  double bins[36]{},xs[36]{},ys[36]{};
+  for(int y=0;y<36;y++){
+    auto row=reinterpret_cast<const UINT*>(static_cast<const BYTE*>(data.Scan0)+y*data.Stride);
+    for(int x=0;x<64;x++){
+      double r=(row[x]>>16&255)/255.,g=(row[x]>>8&255)/255.,b=(row[x]&255)/255.;
+      double high=std::max({r,g,b}),low=std::min({r,g,b}),chroma=high-low,sat=high>0?chroma/high:0;
+      if(high<.18 || sat<.22)continue;
+      double hue=high==r?std::fmod((g-b)/chroma+6,6.):high==g?(b-r)/chroma+2:(r-g)/chroma+4;
+      hue/=6;
+      double weight=sat*sat*std::min(1.,high*1.4);
+      int k=(int)(hue*36)%36;
+      bins[k]+=weight;xs[k]+=weight*std::cos(hue*6.283185);ys[k]+=weight*std::sin(hue*6.283185);
+    }
+  }
+  tiny.UnlockBits(&data);
+  int best=0;double bestScore=-1,peak=0;
+  for(int k=0;k<36;k++){
+    peak=std::max(peak,bins[k]);
+    double score=bins[k]+.6*(bins[(k+35)%36]+bins[(k+1)%36]);
+    if(score>bestScore){bestScore=score;best=k;}
+  }
+  if(peak<3)return CLR_INVALID;
+  double x=xs[best]+.6*(xs[(best+35)%36]+xs[(best+1)%36]),y=ys[best]+.6*(ys[(best+35)%36]+ys[(best+1)%36]);
+  return hlsColor(std::fmod(std::atan2(y,x)/6.283185+1,1.),.83,.85);
+}
+COLORREF autoAccent(){
+  static fs::path from;static bool hadArt=false;static COLORREF value=defaultAccent;
+  if(source.empty())return defaultAccent;
+  std::error_code ignored;
+  auto art=artworkPath(source);
+  bool has=fs::exists(art,ignored);
+  if(source!=from || has!=hadArt){
+    from=source;hadArt=has;
+    COLORREF found=has?wallpaperAccent(art):CLR_INVALID;
+    value=found==CLR_INVALID?defaultAccent:found;
+  }
+  return value;
+}
+void clearRowCache();
+void refreshAccent(){
+  COLORREF want=accentMode?accentPick:autoAccent();
+  if(want==cAccent)return;
+  setAccent(want);
+  if(!libraryWindow)return;
+  for(auto &row:rowCache)row.key=0;
+  RedrawWindow(libraryWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
+}
+void saveAccent(){
+  wchar_t text[16];
+  if(accentMode)swprintf_s(text,L"%02x%02x%02x",GetRValue(accentPick),GetGValue(accentPick),GetBValue(accentPick));
+  else wcscpy_s(text,L"auto");
+  WritePrivateProfileStringW(L"wallpaper",L"accent",text,(folder/L"settings.ini").c_str());
+}
+void loadAccent(){
+  wchar_t text[16]{};
+  GetPrivateProfileStringW(L"wallpaper",L"accent",L"auto",text,16,(folder/L"settings.ini").c_str());
+  unsigned value=0;
+  accentMode=wcscmp(text,L"auto") && swscanf_s(text,L"%x",&value)==1;
+  if(accentMode)accentPick=RGB(value>>16&255,value>>8&255,value&255);
+}
+RECT swatchRect(int k){return {40+k*34,36,66+k*34,62};}
+void drawSwatches(HDC dc,RECT r){
+  for(int k=0;k<8;k++){
+    RECT box=swatchRect(k);OffsetRect(&box,r.left,r.top);
+    if(accentMode && accentPick==accentPresets[k]){RECT ring=box;InflateRect(&ring,3,3);strokeRound(dc,ring,accentPresets[k],10,2);}
+    fillRound(dc,box,accentPresets[k],7);
+    strokeRound(dc,box,RGB(255,255,255),7,1,30);
+  }
+}
 const wchar_t *choiceDescription(int id){
+  if(id==112){
+    static std::wstring text;
+    text=source.empty()?L"Taken from the wallpaper on your desktop.":L"Taken from the wallpaper on your desktop: "+displayName(source)+L".";
+    return text.c_str();
+  }
+  if(id==113)return L"";
   if(id==111)return batteryCopyFailed?L"Couldn't make the 30 fps copy. Needs Python with FFmpeg.":
                                       L"On battery, plays a 30 fps copy of wallpapers above 30 fps. The copy is made once, in the background.";
   return id==103?L"Resumes instantly when the desktop is uncovered. Keeps video memory reserved.":
@@ -1434,6 +1630,8 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         sideFull = GetPrivateProfileIntW(L"wallpaper", L"libraryFull", 0, file.c_str()) != 0;
         sideWidth = sideLast;
       }
+      loadAccent();
+      refreshAccent();
       control(L"BUTTON", L"Add MP4", BS_OWNERDRAW, 101);
       control(L"BUTTON", L"Set wallpaper", BS_OWNERDRAW, 102);
       control(L"BUTTON", L"Smooth resume", BS_AUTORADIOBUTTON | WS_GROUP, 103);
@@ -1441,6 +1639,8 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       control(L"BUTTON", L"Pause when Energy Saver is on",
               BS_AUTOCHECKBOX | WS_GROUP, 105);
       control(L"BUTTON", L"30 fps on battery", BS_AUTOCHECKBOX, 111);
+      control(L"BUTTON", L"Match wallpaper", BS_AUTORADIOBUTTON | WS_GROUP, 112);
+      control(L"BUTTON", L"Choose a colour", BS_AUTORADIOBUTTON, 113);
       control(L"BUTTON", L"Remove", BS_OWNERDRAW, 109);
       control(L"BUTTON", L"Settings", BS_OWNERDRAW, 106);
       control(L"BUTTON", L"Tray menu", BS_OWNERDRAW, 108);
@@ -1471,11 +1671,13 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       move(GetDlgItem(w,102),cw-28-actionWidth,sideFull?ch-48:hero+16,actionWidth,36);
       move(GetDlgItem(w,109),cw-28-actionWidth-108,hero+16,100,36);
       move(GetDlgItem(w,107),sideWidth+18,80,104,32);
-      move(GetDlgItem(w,103),sideWidth+20,206,cw-sideWidth-48,68);
-      move(GetDlgItem(w,104),sideWidth+20,278,cw-sideWidth-48,68);
-      move(GetDlgItem(w,105),sideWidth+20,406,cw-sideWidth-48,68);
-      move(GetDlgItem(w,111),sideWidth+20,478,cw-sideWidth-48,68);
+      settingsTarget=std::clamp(settingsTarget,0.,(double)settingsLimit(ch));
+      settingsOffset=std::clamp(settingsOffset,0.,(double)settingsLimit(ch));
+      int scrolled=(int)std::lround(settingsOffset);
+      const int rows[][2]={{103,206},{104,278},{105,406},{111,478},{112,614},{113,686}};
+      for(auto &row:rows)move(GetDlgItem(w,row[0]),sideWidth+20,row[1]-scrolled,cw-sideWidth-48,68);
       if(batch)EndDeferWindowPos(batch);
+      clipSettings();
       RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
       return 0;
     }
@@ -1499,7 +1701,28 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       } else
         KillTimer(w, 1);
       break;
+    case WM_MOUSEWHEEL:
+      if (settingsPage) {
+        scrollSettings(settingsTarget - GET_WHEEL_DELTA_WPARAM(a) / 120. * 96);
+        return 0;
+      }
+      break;
     case WM_TIMER:
+      if (a == 8) {
+        auto now = Clock::now();
+        double gap = settingsTarget - settingsOffset, step = 1 - std::exp(-std::chrono::duration<double, std::milli>(now - settingsTick).count() / 55);
+        settingsTick = now;
+        if (std::abs(gap) < .5) {
+          settingsOffset = settingsTarget;
+          KillTimer(w, 8);
+          settingsMoving = false;
+        } else
+          settingsOffset += gap * step;
+        RECT client;GetClientRect(w, &client);
+        SendMessage(w, WM_SIZE, SIZE_RESTORED, MAKELPARAM(client.right, client.bottom));
+        UpdateWindow(w);
+        return 0;
+      }
       if (a == 5) {
         sideFrames.push_back(Clock::now());
         double t = std::min(1., std::chrono::duration<double, std::milli>(Clock::now() - sideStart).count() / 300);
@@ -1554,6 +1777,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       }
       if (a == 1 && !IsIconic(w)) {
         static fs::path shownSource;static bool shownPaused=false,shownSaver=false;
+        refreshAccent();
         if(shownSource!=source || shownPaused!=paused || shownSaver!=batteryOverride){
           shownSource=source;shownPaused=paused;shownSaver=batteryOverride;InvalidateRect(libraryList,nullptr,FALSE);
         }
@@ -1714,6 +1938,14 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           if(posterPending)SetTimer(w, 3, 1000, nullptr);
         }
       }
+      if (id == 112 || id == 113) {
+        accentMode = id == 113;
+        saveAccent();
+        refreshAccent();
+        for (int choice : {112, 113})
+          InvalidateRect(GetDlgItem(w, choice), nullptr, FALSE);
+        return 0;
+      }
       if (id == 103 || id == 104) {
         SendMessage(controller, WM_COMMAND,
                     id == 104 ? MaximumSavings : SmoothResume, 0);
@@ -1747,7 +1979,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
     }
     case WM_NOTIFY: {
       auto header=reinterpret_cast<NMHDR*>(b);
-      if(header->code!=NM_CUSTOMDRAW || (header->idFrom!=111 && (header->idFrom<103 || header->idFrom>105)))break;
+      if(header->code!=NM_CUSTOMDRAW || (header->idFrom<111 || header->idFrom>113) && (header->idFrom<103 || header->idFrom>105))break;
       auto &draw=*reinterpret_cast<NMCUSTOMDRAW*>(b);
       if(draw.dwDrawStage!=CDDS_PREPAINT)return CDRF_DODEFAULT;
       RECT bounds;GetClientRect(header->hwndFrom,&bounds);
@@ -1757,6 +1989,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       int id=(int)header->idFrom;
       drawChoice(dc,units(bounds),label,choiceDescription(id),SendMessage(header->hwndFrom,BM_GETCHECK,0,0)==BST_CHECKED,
                  id==105 || id==111,true,hovered(header->hwndFrom),(draw.uItemState&CDIS_FOCUS) && keyboardCues(header->hwndFrom),cWindow);
+      if(id==113)drawSwatches(dc,units(bounds));
       BitBlt(draw.hdc,0,0,bounds.right,bounds.bottom,dc,0,0,SRCCOPY);
       SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
       return CDRF_SKIPDEFAULT;
@@ -1778,12 +2011,12 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         bool sidebar=id==101 || id==106 || id==108;
         COLORREF background=sidebar?cSidebar:cWindow;
         if(id==106 && settingsPage){fillRect(buffer,r,background);fillRound(buffer,r,cSelected,7);background=cSelected;}
-        ButtonStyle style{id==102,background,glyph,id==106 || id==108,id==101?RGB(215,200,255):CLR_INVALID,id==109};
+        ButtonStyle style{id==102,background,glyph,id==106 || id==108,id==101?cAccent:CLR_INVALID,id==109};
         drawButton(buffer,*d,r,style);
         if(id==102 && playbackBusy()){
           // While the player switches between playing and paused, a turning arc stands in for the label.
           bool off=(d->itemState&ODS_DISABLED)!=0;
-          fillRound(buffer,r,off?RGB(74,68,92):cAccent,7);
+          fillRound(buffer,r,off?cAccentOff:cAccent,7);
           Smooth smooth(buffer);
           Gdiplus::Pen pen(gdip(off?cSoft:cInk),fpx(2));
           pen.SetStartCap(Gdiplus::LineCapRound);pen.SetEndCap(Gdiplus::LineCapRound);
@@ -1851,11 +2084,20 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         }
       }else if(mainOff){
       }else if(settingsPage){
-        paintText(dc,L"Settings",{left,118,right,158},28,cText,FW_SEMIBOLD);
-        paintText(dc,L"Performance",{left,176,right,198},15,cText,FW_SEMIBOLD);
-        paintText(dc,playbackPath.empty()?L"Playback starts with the next wallpaper":playbackPath,{left+120,178,right,198},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
-        {UiDC mapping(dc);panel(dc,{left,358,right,359},cLine);}
-        paintText(dc,L"Battery",{left,376,right,398},15,cText,FW_SEMIBOLD);
+        int o=(int)std::lround(settingsOffset),saved=SaveDC(dc);
+        IntersectClipRect(dc,0,px(settingsTop),pixels.right,pixels.bottom);
+        paintText(dc,L"Settings",{left,118-o,right,158-o},28,cText,FW_SEMIBOLD);
+        paintText(dc,L"Performance",{left,176-o,right,198-o},15,cText,FW_SEMIBOLD);
+        paintText(dc,playbackPath.empty()?L"Playback starts with the next wallpaper":playbackPath,{left+120,178-o,right,198-o},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
+        {UiDC mapping(dc);panel(dc,{left,358-o,right,359-o},cLine);panel(dc,{left,566-o,right,567-o},cLine);}
+        paintText(dc,L"Battery",{left,376-o,right,398-o},15,cText,FW_SEMIBOLD);
+        paintText(dc,L"Appearance",{left,584-o,right,606-o},15,cText,FW_SEMIBOLD);
+        paintText(dc,L"Accent colour for buttons, highlights and selection",{left+120,586-o,right,606-o},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
+        RestoreDC(dc,saved);
+        if(int limit=settingsLimit(r.bottom)){
+          int view=r.bottom-settingsTop,tall=std::max(28,view*view/(view+limit)),top=settingsTop+(int)((view-tall)*settingsOffset/limit);
+          fillRound(dc,{r.right-10,top+2,r.right-6,top+tall-2},cLine,2);
+        }
       }else{
         int i=selectedIndex();
         int hero=heroBottom(r.right,r.bottom);
@@ -1952,6 +2194,8 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       closeTileMenu();
       releaseCanvases();
       libraryList = libraryScroll = nullptr;
+      lift.clear();
+      lifting = false;
       selectedRow = -1;
       sideAnimating = splitDrag = false;
       clearRowCache();

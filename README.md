@@ -4,6 +4,7 @@ Open `build\Litely.exe` and choose an MP4. The first file picker opens the prepa
 
 - Left- or right-click the tray icon to open its menu. Pause, resume, choose a video or exit from there.
 - Right-click the tray icon and open **Performance** to choose **Smooth resume** (default) or **Maximum savings**. Maximum savings releases the renderer after manual pause or two seconds of complete desktop coverage. Smooth resume keeps it ready. Both modes keep the video frame rate and remember your choice across restarts.
+- **Settings > Appearance** sets the accent colour: **Match wallpaper** (default) takes it from the wallpaper on your desktop, or choose one of eight colours.
 - In the Library, drag the divider beside the list to widen it, or click its handle to fill the window. Once wide, the list becomes a grid: click a tile to put it on the desktop, or use its ⋯ button for Rename and Remove.
 - In **Add MP4**, **Playback: Lowest memory** converts the video once into a simpler H.264 form that Litely decodes itself, using about half the video memory. The copy is roughly three times larger and very slightly softer in fine grain; the original is kept.
 - **Settings > 30 fps on battery** (off by default) makes a 30 fps copy of the active wallpaper once, in the background, and plays it while on battery. It needs Python with FFmpeg.
