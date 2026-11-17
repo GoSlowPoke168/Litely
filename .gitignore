@@ -2,3 +2,9 @@ build/
 __pycache__/
 *.pyc
 .superpowers/
+spike/*.exe
+spike/*.obj
+spike/*.raw
+spike/*.png
+spike/*.mp4
+spike/*.h264

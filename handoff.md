@@ -5,7 +5,11 @@ Updated November 16, 2026. Project root: `C:\Users\jhou2\Documents\Projects and 
 
 Litely is a native Windows tray app that mirrors one animated MP4 across monitors. The user prioritizes low process RAM and GPU memory, smooth resume, and a desktop that never flashes the old wallpaper. The approved visual and interaction reference is `docs/ui-preview/index.html`. Import defaults are **original resolution and original frame rate**, explicitly chosen by the user.
 
-On November 16, 2026, Claude polished the UI per `docs/superpowers/specs/2026-11-16-ui-polish-design.md`. The work covered anti-aliased GDI+ controls, Segoe UI Variable and Fluent icons, a dark scrollbar, a redesigned import window with estimates, real progress and Cancel, and themed dialogs. The footer was removed. Litely also scrubs its stills from Windows Recent images. Builds are clean at /W4, and the playback probe passes.
+State on November 16, 2026: `main` holds the UI polish, the lean playback path with Media Engine fallback, and the optional 30 fps battery mode (all merged, nothing pushed; there is no remote). Designs are in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/`. Builds are clean at /W4.
+
+**Next work:** `docs/superpowers/plans/2026-11-16-stage2-direct-decoder.md`. It is prototype-first: build and measure a throwaway direct GPU decoder in `spike\`, then stop at its gate and ask the user before any product build. Its "What Stage 1 taught us" list is required reading.
+
+The user tests with 1080p and higher clips and does not use the 720p copies. They want progress reported in plain terms, and they pay per usage: keep test runs short and do not re-run the 9-minute `Test-Savings.ps1` more than needed.
 
 ## Build, launch, and navigate
 
@@ -39,6 +43,26 @@ The Library shows process CPU, working-set RAM, and local GPU allocation. Its sa
 **Add MP4** opens the file picker and wizard. Original imports reference the source file. Resolution and frame rate are independent choices. Up to 1080p, up to 720p, or a 30 fps cap can create a cached H.264 playback copy. The optimizer pads odd dimensions when encoding at original size. A marquee indicates conversion activity. Imported videos can show a still before activation through Windows thumbnail extraction with a Media Foundation frame fallback. Click the large wallpaper title or double-click a library row to rename. Remove drops the library entry and keeps the video file.
 
 User data lives in `%LOCALAPPDATA%\Litely`. `settings.ini` stores active playback state and preferences, `library.txt` is a UTF-16 path list, and `library-names.ini` stores display names by per-path key. Desktop stills use `wallpaper-*.bmp`, library stills use `*.preview.bmp`, and converted copies live in `optimized\`. Use disposable files for import/remove tests.
+
+## Deferred review notes
+
+From the independent review of the lean player (none is a crash or a visible defect in normal use):
+- `leanHeld` is not enforced in `draw()`; after an Energy Saver freeze a stale timer tick can present one more frame.
+- `leanDropStill` flushes the D3D context after every frame's still check; guard it to run only when a still was made.
+- Cancelling a pending pause while the desktop is covered leaves the player open with no unload timer.
+- `batteryCopyFailed` is session-wide, so one failed clip disables copies for all until the box is re-ticked.
+- A deleted 30 fps copy is remade only on the next power, activation or setting event.
+- The battery job and the import wizard share a scratch directory; cancelling one removes the other's scratch.
+- `updateBatteryCopy` reads the shell property store on the UI thread.
+- A saved position past the end may force the fallback instead of restarting from zero.
+- The UI thread joins MMCSS for both pipelines, including Library painting.
+- `playingFile` is empty before the first open, so the Library can briefly read "30 fps on battery".
+- The decode thread catches only `HRESULT`.
+- `leanJoin` waits on the UI thread for a slow file open.
+- A swap while paused keeps the old decoder's surface pool until the next frame.
+- Video size comes from `MF_MT_FRAME_SIZE`, not the display aperture.
+- The swap test log reports which branch ran, not that the windows survived.
+- Four review fixes have no test: colour space on a kept swap, a decoder that never outputs, guarded copy completion, fallback pinning only on start failure.
 
 ## Next project
 
