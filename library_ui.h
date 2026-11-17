@@ -973,7 +973,7 @@ void placeList(){
   scrollOffset=std::clamp(scrollOffset,0.,(double)limit);
   SetWindowPos(libraryList,nullptr,0,-(int)std::lround(scrollOffset),r.right-(limit?px(10):0),std::max((int)r.bottom,scrollContent()),SWP_NOZORDER|SWP_NOACTIVATE);
   RECT strip{r.right-px(10),0,r.right,r.bottom};
-  InvalidateRect(libraryScroll,&strip,TRUE);
+  InvalidateRect(libraryScroll,&strip,FALSE);
 }
 void scrollTo(double target,bool animate){
   scrollTarget=std::clamp(target,0.,(double)scrollLimit());
@@ -996,12 +996,19 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     return SendMessage(GetParent(w),m,a,b);
   case WM_SETFOCUS:SetFocus(libraryList);return 0;
   case WM_SIZE:placeList();return 0;
-  case WM_ERASEBKGND:{RECT r;GetClientRect(w,&r);panel((HDC)a,r,cWindow);return 1;}
+  case WM_ERASEBKGND:return 1;
   case WM_PAINT:{
+    // Drawn off-screen and copied once, so the bar never shows a half-erased frame.
     PAINTSTRUCT ps;HDC dc=BeginPaint(w,&ps);
+    RECT r;GetClientRect(w,&r);
+    HDC buffer=CreateCompatibleDC(dc);HBITMAP bitmap=CreateCompatibleBitmap(dc,r.right,r.bottom);
+    auto old=SelectObject(buffer,bitmap);
+    panel(buffer,r,cWindow);
     RECT thumb=scrollThumb();
     if(thumb.bottom>thumb.top)
-      fillRound(dc,{dip(thumb.left),dip(thumb.top),dip(thumb.right),dip(thumb.bottom)},scrollHot||scrollDragging?cMuted:cLine,2);
+      fillRound(buffer,{dip(thumb.left),dip(thumb.top),dip(thumb.right),dip(thumb.bottom)},scrollHot||scrollDragging?cMuted:cLine,2);
+    BitBlt(dc,ps.rcPaint.left,ps.rcPaint.top,ps.rcPaint.right-ps.rcPaint.left,ps.rcPaint.bottom-ps.rcPaint.top,buffer,ps.rcPaint.left,ps.rcPaint.top,SRCCOPY);
+    SelectObject(buffer,old);DeleteObject(bitmap);DeleteDC(buffer);
     EndPaint(w,&ps);return 0;
   }
   case WM_MOUSEWHEEL:
@@ -1010,7 +1017,7 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     double gap=scrollTarget-scrollOffset;
     if(std::abs(gap)<.75){scrollOffset=scrollTarget;KillTimer(w,1);}
     else scrollOffset+=gap*.3;
-    placeList();UpdateWindow(libraryList);return 0;
+    placeList();UpdateWindow(libraryList);UpdateWindow(w);return 0;
   }
   case WM_LBUTTONDOWN:{
     RECT thumb=scrollThumb();int y=GET_Y_LPARAM(b);
@@ -1028,12 +1035,12 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     }else if(!scrollHot){
       scrollHot=true;
       TRACKMOUSEEVENT leave{sizeof leave,TME_LEAVE,w,0};TrackMouseEvent(&leave);
-      InvalidateRect(w,nullptr,TRUE);
+      InvalidateRect(w,nullptr,FALSE);
     }
     return 0;
   }
-  case WM_LBUTTONUP:if(scrollDragging){scrollDragging=false;ReleaseCapture();InvalidateRect(w,nullptr,TRUE);}return 0;
-  case WM_MOUSELEAVE:scrollHot=false;InvalidateRect(w,nullptr,TRUE);return 0;
+  case WM_LBUTTONUP:if(scrollDragging){scrollDragging=false;ReleaseCapture();InvalidateRect(w,nullptr,FALSE);}return 0;
+  case WM_MOUSELEAVE:scrollHot=false;InvalidateRect(w,nullptr,FALSE);return 0;
   }
   return DefWindowProc(w,m,a,b);
 }
