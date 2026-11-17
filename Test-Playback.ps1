@@ -1,7 +1,7 @@
-param([Parameter(Mandatory,Position=0,ValueFromRemainingArguments)][string[]]$Clips, [ValidateSet('lean','legacy','any')][string]$Pipeline = 'any')
+param([Parameter(Mandatory,Position=0,ValueFromRemainingArguments)][string[]]$Clips, [ValidateSet('direct','lean','legacy','any')][string]$Pipeline = 'any')
 $ErrorActionPreference = 'Stop'
 $exe = Join-Path $PSScriptRoot 'build\Litely.exe'
-$env:LITELY_PIPELINE = if ($Pipeline -eq 'legacy') { 'legacy' } else { $null }
+$env:LITELY_PIPELINE = if ($Pipeline -in 'legacy', 'lean') { $Pipeline } else { $null }
 foreach ($clip in $Clips) {
     $file = Get-Item -LiteralPath $clip
     $report = Join-Path ([IO.Path]::GetTempPath()) ("Litely-" + [Guid]::NewGuid() + ".txt")
@@ -13,7 +13,7 @@ foreach ($clip in $Clips) {
         $lines = @(Get-Content -LiteralPath $report)
         $lines
         if ($player.ExitCode -ne 0) { throw "Renderer failed ($($player.ExitCode))" }
-        if (!($lines -match '^pipeline (legacy|lean)$')) { throw 'Report has no pipeline line' }
+        if (!($lines -match '^pipeline (legacy|lean|direct)$')) { throw 'Report has no pipeline line' }
         if (!($lines -match '^pacing frames \d+ expected \d+ late \d+ worst [\d.]+ ms$')) { throw 'Report has no pacing line' }
         if ($Pipeline -ne 'any' -and !($lines -contains "pipeline $Pipeline")) { throw "Expected pipeline $Pipeline" }
         if (!(Test-Path -LiteralPath "$report.first.bmp")) { throw 'No first-frame still' }

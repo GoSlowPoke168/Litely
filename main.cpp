@@ -145,8 +145,9 @@ void memory(const wchar_t *label) {
 }
 using Clock = std::chrono::steady_clock;
 HANDLE surfaceHandle;
-fs::path leanFailedFor;
+fs::path leanFailedFor, directFailedFor;
 std::wstring playbackPath;
+#include "direct_player.h"
 #include "lean_player.h"
 void closePlayer() {
   if (ticks)
@@ -217,10 +218,6 @@ void playerSeek(double seconds) {
     check(engine->SetCurrentTime(seconds));
 }
 void createDevice() {
-  if (!mediaStarted) {
-    check(MFStartup(MF_VERSION));
-    mediaStarted = true;
-  }
   UINT flags =
       D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
   check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
@@ -229,6 +226,15 @@ void createDevice() {
   ComPtr<ID3D10Multithread> multi;
   check(context.As(&multi));
   multi->SetMultithreadProtected(TRUE);
+}
+// Media Foundation is only needed by the lean decode thread and the Media Engine.
+void ensureManager() {
+  if (manager)
+    return;
+  if (!mediaStarted) {
+    check(MFStartup(MF_VERSION));
+    mediaStarted = true;
+  }
   UINT token;
   check(MFCreateDXGIDeviceManager(&token, &manager));
   check(manager->ResetDevice(device.Get(), token));
@@ -244,6 +250,7 @@ void openPlayer() {
     leanOpen(playingFile, position);
     return;
   }
+  ensureManager();
   ComPtr<IMFAttributes> attr;
   check(MFCreateAttributes(&attr, 4));
   auto events = Make<Events>();
@@ -895,6 +902,7 @@ void toggle() {
 void activateSource(const fs::path &path) {
   closePlayer();
   leanFailedFor.clear();
+  directFailedFor.clear();
   source = path;
   preparePoster(true);
   position = 0;
@@ -1106,6 +1114,13 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
     case Media:
       if (a != generation || !playerOpen())
         return 0;
+      if (b == DirectFailed) {
+        directFailedFor = playingFile;
+        closePlayer();
+        if (!paused && !applyingPause)
+          openPlayer();
+        return 0;
+      }
       if (b == LeanFailed) {
         if (!ready)
           leanFailedFor = source;
@@ -1154,7 +1169,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
           DXGI_ADAPTER_DESC about{};
           if (SUCCEEDED(device.As(&dx)) && SUCCEEDED(dx->GetAdapter(&adapter)))
             adapter->GetDesc(&about);
-          playbackPath = (leanActive ? L"Hardware decode, direct · " : L"Compatibility mode · ") + std::wstring(about.Description);
+          playbackPath = (directActive ? L"Lowest-memory decoder · " : leanActive ? L"Hardware decode, direct · " : L"Compatibility mode · ") + std::wstring(about.Description);
         }
         if (position > 0 && !leanActive) {
           seekStarted = GetTickCount64();
@@ -1402,7 +1417,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           pacingStart = Clock::now();
           initialCPU = cpuSeconds();
           firstFrames = frames;
-          report << (leanActive ? L"pipeline lean" : L"pipeline legacy") << std::endl;
+          report << (directActive ? L"pipeline direct" : leanActive ? L"pipeline lean" : L"pipeline legacy") << std::endl;
           leanLate = leanRebased = 0;
           leanWorstLate = 0;
         }

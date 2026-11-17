@@ -1,5 +1,5 @@
 ﻿// Hardware decode on a worker thread; the UI thread presents the decoder's NV12 frames.
-constexpr LPARAM LeanReady = 0x10001, LeanFailed = 0x10002;
+constexpr LPARAM LeanReady = 0x10001, LeanFailed = 0x10002, DirectFailed = 0x10003;
 struct LeanFrame {
   ComPtr<IMFSample> sample;
   LONGLONG pts = 0, time = 0;
@@ -220,9 +220,23 @@ void leanJoin() {
   leanQueue.clear();
   leanStop = false;
 }
+void ensureManager();
 void leanStart(const fs::path &file, double start) {
   leanError = S_OK;
   leanRebase = true;
+  wchar_t forced[16]{};
+  GetEnvironmentVariableW(L"LITELY_PIPELINE", forced, 16);
+  if (wcscmp(forced, L"lean") && directFailedFor != file && directOpen(file, start)) {
+    leanWidth = directWidth;
+    leanHeight = directHeight;
+    frameRate = directRate;
+    leanFrameTime = directFrameTime;
+    leanDuration = directDuration;
+    leanColorSpace = directColorSpace;
+    PostMessage(controller, Media, generation, LeanReady);
+    return;
+  }
+  ensureManager();
   leanWorker = std::thread(leanDecode, file, start, generation, manager);
 }
 void leanOpen(const fs::path &file, double start) {
@@ -242,31 +256,22 @@ void leanDropStill() {
 }
 void leanClose() {
   leanJoin();
+  directClose();
   leanShown = {};
   leanDropStill();
   leanActive = false;
 }
 void leanRestart(const fs::path &file, double start) {
   leanJoin();
+  directClose();
   ++generation;
   leanStart(file, start);
 }
-// False while the next frame is not due yet or has not been decoded.
-bool leanAcquire(LONGLONG *pts) {
-  LeanFrame frame;
-  LONGLONG now = leanNow();
-  {
-    std::lock_guard<std::mutex> hold(leanLock);
-    if (leanQueue.empty() || (!leanRebase && now + 5000 < leanBase + leanQueue.front().time))
-      return false;
-    frame = std::move(leanQueue.front());
-    leanQueue.pop_front();
-  }
-  leanSpace.notify_one();
+void leanClock(LONGLONG now, LONGLONG time) {
   if (leanRebase) {
-    leanBase = now - frame.time;
+    leanBase = now - time;
     leanRebase = false;
-  } else if (LONGLONG lateness = now - leanBase - frame.time; lateness > leanFrameTime) {
+  } else if (LONGLONG lateness = now - leanBase - time; lateness > leanFrameTime) {
     leanBase += lateness;
     ++leanRebased;
     // One refresh of delay is Present waiting on the display, not a stutter.
@@ -275,6 +280,37 @@ bool leanAcquire(LONGLONG *pts) {
       leanWorstLate = std::max(leanWorstLate, lateness / 1e4);
     }
   }
+}
+// False while the next frame is not due yet or has not been decoded.
+bool leanAcquire(LONGLONG *pts) {
+  LeanFrame frame;
+  LONGLONG now = leanNow();
+  if (directActive) {
+    if (!directPending || (!leanRebase && now + 5000 < leanBase + directTime))
+      return false;
+    leanClock(now, directTime);
+    ComPtr<ID3D11Texture2D> back;
+    check(chain->GetBuffer(0, IID_PPV_ARGS(&back)));
+    D3D11_BOX box{0, 0, 0, width, height, 1};
+    context->CopySubresourceRegion(back.Get(), 0, 0, 0, 0, directTexture(), directPendingIndex(), &box);
+    *pts = directPts;
+    directShow();
+    try {
+      directDecode();
+    } catch (HRESULT) {
+      PostMessage(controller, Media, generation, DirectFailed);
+    }
+    return true;
+  }
+  {
+    std::lock_guard<std::mutex> hold(leanLock);
+    if (leanQueue.empty() || (!leanRebase && now + 5000 < leanBase + leanQueue.front().time))
+      return false;
+    frame = std::move(leanQueue.front());
+    leanQueue.pop_front();
+  }
+  leanSpace.notify_one();
+  leanClock(now, frame.time);
   ComPtr<ID3D11Texture2D> texture, back;
   UINT index;
   leanSurface(frame, texture, index);
@@ -287,7 +323,10 @@ bool leanAcquire(LONGLONG *pts) {
 }
 void leanSchedule() {
   LONGLONG wait = 20000;
-  {
+  if (directActive) {
+    if (directPending)
+      wait = leanRebase ? 0 : leanBase + directTime - leanNow();
+  } else {
     std::lock_guard<std::mutex> hold(leanLock);
     if (!leanQueue.empty())
       wait = leanRebase ? 0 : leanBase + leanQueue.front().time - leanNow();
@@ -329,7 +368,11 @@ ID3D11Texture2D *leanStill() {
   }
   ComPtr<ID3D11Texture2D> texture;
   UINT index;
-  leanSurface(leanShown, texture, index);
+  if (directActive) {
+    texture = directTexture();
+    index = directStillIndex();
+  } else
+    leanSurface(leanShown, texture, index);
   D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputDesc{};
   inputDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
   inputDesc.Texture2D.ArraySlice = index;
