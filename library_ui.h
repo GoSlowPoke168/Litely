@@ -1121,7 +1121,13 @@ RECT liftedRect(int i){
   RECT cell=cellRect(i);
   float e=liftAmount(i);
   int growX=(int)std::lround((cell.right-cell.left)*.02f*e),growY=(int)std::lround((cell.bottom-cell.top)*.02f*e),rise=(int)std::lround(px(2)*e);
-  return {cell.left-growX,cell.top-growY-rise,cell.right+growX,cell.bottom+growY-rise};
+  RECT box{cell.left-growX,cell.top-growY-rise,cell.right+growX,cell.bottom+growY-rise};
+  // The list can't draw outside itself, so a tile at its edge grows inward instead of being clipped.
+  RECT view;GetClientRect(libraryScroll,&view);view.right-=cells().strip;
+  if(cell.top>=0 && box.top<0)OffsetRect(&box,0,-box.top);
+  if(cell.left>=0 && box.left<0)OffsetRect(&box,-box.left,0);
+  if(cell.right<=view.right && box.right>view.right)OffsetRect(&box,view.right-box.right,0);
+  return box;
 }
 RECT moreRect(int i){
   RECT cell=liftedRect(i);
