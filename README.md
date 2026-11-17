@@ -4,6 +4,7 @@ Open `build\Litely.exe` and choose an MP4. The first file picker opens the prepa
 
 - Left- or right-click the tray icon to open its menu. Pause, resume, choose a video or exit from there.
 - Right-click the tray icon and open **Performance** to choose **Smooth resume** (default) or **Maximum savings**. Maximum savings releases the renderer after manual pause or two seconds of complete desktop coverage. Smooth resume keeps it ready. Both modes keep the video frame rate and remember your choice across restarts.
+- In **Add MP4**, **Playback: Lowest memory** converts the video once into a simpler H.264 form that Litely decodes itself, using about half the video memory. The copy is roughly three times larger and very slightly softer in fine grain; the original is kept.
 - **Settings > 30 fps on battery** (off by default) makes a 30 fps copy of the active wallpaper once, in the background, and plays it while on battery. It needs Python with FFmpeg.
 - Choosing a video also sets a still from it as the Windows wallpaper, even when the desktop is covered. Re-selecting the same file reuses its saved image. Windows displays that still while the player starts.
 - Manual pause saves the video frame as a BMP, makes it the Windows Fill wallpaper on all monitors, and stops the playback clock. That still remains after exit.
@@ -24,7 +25,7 @@ Run `build.cmd` with the Visual Studio C++ desktop tools and the Windows SDK ins
 
 `Test-Playback.ps1 "C:\path\file.mp4"` briefly renders the clip behind desktop icons, captures a frame to a temporary file, and checks paused frame identity, resume latency and loop restart. It reports process and GPU memory and frame submissions. It skips applying the captured image to Windows personalization.
 
-`Test-Savings.ps1` compares the two playback paths and checks frame pacing and pixel accuracy; it briefly shows a video window. `Test-Stress.ps1` storms a test instance with pause and display-change messages. Both stop a running Litely.
+`Test-Direct.ps1` converts a clip with `optimize.py --lowest-memory` and checks the direct decoder against the lean path on it (pixels, pacing, memory, fallback). `Test-Savings.ps1` compares the two playback paths and checks frame pacing and pixel accuracy; it briefly shows a video window. `Test-Stress.ps1` storms a test instance with pause and display-change messages. Both stop a running Litely.
 
 `Test-Visibility.ps1 "C:\path\file.mp4"` is an interactive single-monitor test. It temporarily minimizes other windows, tiles two test windows, measures the idle tray, reveals half the desktop, then restores the windows.
 

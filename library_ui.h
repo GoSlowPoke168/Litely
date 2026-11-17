@@ -465,12 +465,15 @@ ImportJob *activeImport=nullptr;
 // GPU and RAM per decoded megapixel, fitted to 20 s Test-Playback.ps1 runs from 720p to 2160p.
 double videoMemory(double megapixels){return 8+19.8*megapixels;}
 double processMemory(double megapixels){return 62+9.5*megapixels;}
+// The same for a lowest-memory copy on the direct decoder.
+double directVideoMemory(double megapixels){return 8.6+6.8*megapixels;}
+double directProcessMemory(double megapixels){return 56+7.7*megapixels;}
 double importScale(const ImportJob &job,int limit){
   if(!limit || !job.width || !job.height)return 1;
   return std::min({1.,limit/(double)job.height,limit*16/9./job.width});
 }
 int chosenLimit(HWND w){return IsDlgButtonChecked(w,302)?1080:IsDlgButtonChecked(w,303)?720:0;}
-bool convertChoice(HWND w){return chosenLimit(w) || IsDlgButtonChecked(w,306);}
+bool convertChoice(HWND w){return chosenLimit(w) || IsDlgButtonChecked(w,306) || IsDlgButtonChecked(w,308);}
 void paintImport(HWND w,HDC dc){
   auto &job=*activeImport;
   paintText(dc,job.original.filename().wstring(),{24,20,436,42},16,cText,FW_SEMIBOLD);
@@ -484,20 +487,22 @@ void paintImport(HWND w,HDC dc){
   paintText(dc,facts,{24,46,436,66},12,cMuted);
   paintText(dc,L"Resolution",{24,86,436,106},13,cSoft,FW_SEMIBOLD);
   paintText(dc,L"Frame rate",{24,156,436,176},13,cSoft,FW_SEMIBOLD);
-  RECT box{24,226,436,382};
+  paintText(dc,L"Playback",{24,226,436,246},13,cSoft,FW_SEMIBOLD);
+  bool lowest=IsDlgButtonChecked(w,308)!=0;
+  RECT box{24,296,436,452};
   fillRound(dc,box,cRaised,10);
-  paintText(dc,L"Estimated while playing",{40,240,420,258},12,cMuted);
+  paintText(dc,L"Estimated while playing",{40,310,420,328},12,cMuted);
   if(!job.width || !job.height || !job.rate){
-    paintText(dc,L"Windows couldn't read this video's size or frame rate, so Litely can't estimate savings.",{40,266,420,330},13,cSoft,FW_NORMAL,DT_LEFT|DT_WORDBREAK);
+    paintText(dc,L"Windows couldn't read this video's size or frame rate, so Litely can't estimate savings.",{40,336,420,400},13,cSoft,FW_NORMAL,DT_LEFT|DT_WORDBREAK);
   }else{
     double scale=importScale(job,chosenLimit(w)),before=job.width*(double)job.height/1e6,after=before*scale*scale;
     double fps=job.rate/1000.,next=IsDlgButtonChecked(w,306)?std::min(30.,fps):fps;
     struct Row{const wchar_t *label;double from,to;const wchar_t *unit;};
-    Row rows[]={{L"Video memory",videoMemory(before),videoMemory(after),L" MiB"},
-                {L"RAM",processMemory(before),processMemory(after),L" MiB"},
+    Row rows[]={{L"Video memory",videoMemory(before),lowest?directVideoMemory(after):videoMemory(after),L" MiB"},
+                {L"RAM",processMemory(before),lowest?directProcessMemory(after):processMemory(after),L" MiB"},
                 {L"Frames per second",fps,next,L""}};
     for(int k=0;k<3;k++){
-      auto &row=rows[k];int y=266+k*38;
+      auto &row=rows[k];int y=336+k*38;
       paintText(dc,row.label,{40,y,240,y+18},13,cSoft);
       bool approx=*row.unit!=0;
       swprintf_s(text,approx?L"≈%.0f%s  →  ≈%.0f%s":L"%.0f%s  →  %.0f%s",row.from,row.unit,row.to,row.unit);
@@ -512,18 +517,19 @@ void paintImport(HWND w,HDC dc){
       fillRound(dc,fill,ratio<.995?cAccent:RGB(142,139,157),2.5f);
     }
   }
-  RECT note{24,388,436,406};
+  RECT note{24,458,436,476};
   if(job.process){
     if(job.percent>=0)swprintf_s(text,L"Converting…  %d%%",job.percent);else wcscpy_s(text,L"Converting…");
     paintText(dc,text,note,12,cSoft);
-    RECT track{24,412,436,417};
+    RECT track{24,482,436,487};
     fillRound(dc,track,cLine,2.5f);
     RECT fill=track;
     if(job.percent>=0)fill.right=fill.left+std::max(5,(int)(track.right-track.left)*job.percent/100);
     else{int span=(track.right-track.left)/4,offset=(job.tick*12)%(track.right-track.left+span)-span;
          fill.left=std::max(track.left,track.left+offset);fill.right=std::min(track.right,track.left+offset+span);}
     if(fill.right>fill.left)fillRound(dc,fill,cAccent,2.5f);
-  }else paintText(dc,convertChoice(w)?L"Creates an H.264 playback copy in Litely's folder. Your original file is kept.":
+  }else paintText(dc,lowest?L"Creates a larger copy that needs the least memory. Your original file is kept.":
+                     convertChoice(w)?L"Creates an H.264 playback copy in Litely's folder. Your original file is kept.":
                                      L"Plays your file directly. Nothing is copied.",note,12,cMuted);
 }
 void stopConversion(ImportJob &job,bool cancelled){
@@ -553,11 +559,11 @@ void stopConversion(ImportJob &job,bool cancelled){
 fs::path copyDirectory(const fs::path &original){
   return folder/L"optimized"/posterPath(original).stem()/std::to_wstring(fs::last_write_time(original).time_since_epoch().count());
 }
-std::wstring conversionCommand(const fs::path &original,int limit,bool cap,const fs::path &progress,const fs::path &directory){
+std::wstring conversionCommand(const fs::path &original,int limit,bool cap,const fs::path &progress,const fs::path &directory,bool lowest=false){
   wchar_t exe[32768];GetModuleFileName(nullptr,exe,32768);
   auto script=fs::path(exe).parent_path().parent_path()/L"optimize.py";
   auto quote=[](const fs::path &v){return L"\""+v.wstring()+L"\"";};
-  return L"python "+quote(script)+L" --height "+std::to_wstring(limit)+(cap?L" --cap-fps":L"")+
+  return L"python "+quote(script)+L" --height "+std::to_wstring(limit)+(cap?L" --cap-fps":L"")+(lowest?L" --lowest-memory":L"")+
          (progress.empty()?L"":L" --progress "+quote(progress))+L" --output "+quote(directory)+L" "+quote(original);
 }
 bool batteryFps=false,batteryCopyFailed=false;
@@ -662,10 +668,11 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
     readVideoDetails(job->original,&job->width,&job->height,&job->rate,&job->duration);
     std::error_code ignored;job->bytes=fs::file_size(job->original,ignored);
     DpiScope scale(GetDpiForWindow(w));
-    sizeDialog(w,460,480);
+    sizeDialog(w,460,550);
     placeDip(w,301,14,110,150,32);placeDip(w,302,168,110,110,32);placeDip(w,303,282,110,110,32);
     placeDip(w,305,14,180,150,32);placeDip(w,306,168,180,110,32);
-    placeDip(w,IDCANCEL,340,428,96,36);placeDip(w,IDOK,236,428,96,36);
+    placeDip(w,307,14,250,150,32);placeDip(w,308,168,250,150,32);
+    placeDip(w,IDCANCEL,340,498,96,36);placeDip(w,IDOK,236,498,96,36);
     std::wstring original=L"Original";
     if(job->height)original+=L" ("+std::to_wstring(job->height)+L"p)";
     SetDlgItemText(w,301,original.c_str());
@@ -676,7 +683,7 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
     EnableWindow(GetDlgItem(w,302),!known || importScale(*job,1080)<1);
     EnableWindow(GetDlgItem(w,303),!known || importScale(*job,720)<1);
     EnableWindow(GetDlgItem(w,306),!job->rate || job->rate>30500);
-    CheckRadioButton(w,301,303,301);CheckRadioButton(w,305,306,305);
+    CheckRadioButton(w,301,303,301);CheckRadioButton(w,305,306,305);CheckRadioButton(w,307,308,307);
   }
   if(auto result=dialogTheme(w,msg,a,b,paintImport))return result;
   if(!job)return FALSE;
@@ -684,7 +691,7 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   if(msg==WM_DESTROY && job->process){KillTimer(w,1);stopConversion(*job,true);return FALSE;}
   if(msg==WM_NOTIFY){
     auto header=reinterpret_cast<NMHDR*>(b);
-    if(header->code==NM_CUSTOMDRAW && header->idFrom>=301 && header->idFrom<=306){
+    if(header->code==NM_CUSTOMDRAW && header->idFrom>=301 && header->idFrom<=308){
       auto &draw=*reinterpret_cast<NMCUSTOMDRAW*>(b);
       if(draw.dwDrawStage!=CDDS_PREPAINT){SetWindowLongPtr(w,DWLP_MSGRESULT,CDRF_DODEFAULT);return TRUE;}
       DpiScope scale(GetDpiForWindow(w));
@@ -700,8 +707,8 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
       SetWindowLongPtr(w,DWLP_MSGRESULT,CDRF_SKIPDEFAULT);return TRUE;
     }
   }
-  if(msg==WM_COMMAND && LOWORD(a)>=301 && LOWORD(a)<=306){
-    for(int id=301;id<=306;id++)InvalidateRect(GetDlgItem(w,id),nullptr,FALSE);
+  if(msg==WM_COMMAND && LOWORD(a)>=301 && LOWORD(a)<=308){
+    for(int id=301;id<=308;id++)InvalidateRect(GetDlgItem(w,id),nullptr,FALSE);
     InvalidateRect(w,nullptr,FALSE);return TRUE;
   }
   if(msg==WM_TIMER && job->process){
@@ -731,12 +738,14 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   int limit=chosenLimit(w);
   if(!convertChoice(w)){job->result=job->original;EndDialog(w,1);return TRUE;}
   std::wstring size=std::to_wstring(limit),suffix=limit?size+L"p":L"original";
+  bool lowest=IsDlgButtonChecked(w,308)!=0;
   if(cap)suffix+=L"-30fps";
+  if(lowest)suffix+=L"-lowmem";
   auto dir=copyDirectory(job->original);
   job->result=dir/(job->original.stem().wstring()+L"-"+suffix+L".mp4");
   if(fs::exists(job->result)){EndDialog(w,1);return TRUE;}
   job->progress=dir/(suffix+L".progress");
-  auto command=conversionCommand(job->original,limit,cap,job->progress,dir);
+  auto command=conversionCommand(job->original,limit,cap,job->progress,dir,lowest);
   job->group=CreateJobObject(nullptr,nullptr);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -752,7 +761,7 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
     MessageBox(w,L"Could not start the conversion.",L"Litely",MB_ICONERROR);return TRUE;
   }
   ResumeThread(process.hThread);CloseHandle(process.hThread);
-  for(int id:{301,302,303,305,306,IDOK})EnableWindow(GetDlgItem(w,id),FALSE);
+  for(int id:{301,302,303,305,306,307,308,IDOK})EnableWindow(GetDlgItem(w,id),FALSE);
   SetFocus(GetDlgItem(w,IDCANCEL));
   SetTimer(w,1,100,nullptr);InvalidateRect(w,nullptr,FALSE);
   return TRUE;
