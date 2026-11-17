@@ -18,6 +18,7 @@
 #include <dwmapi.h>
 #include <dxgi1_4.h>
 #include <filesystem>
+#include <iomanip>
 #include <fstream>
 #include <condition_variable>
 #include <deque>

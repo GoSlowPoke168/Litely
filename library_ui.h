@@ -18,6 +18,38 @@ std::wstring statsText = L"Measuring...";
 double lastCPU = 0;
 ULONGLONG lastSample = 0;
 float previewOpacity = 1;
+// True while the Library panel is moving: images are scaled quickly and tiles stretched instead of redrawn.
+#pragma comment(lib,"winmm.lib")
+#pragma comment(lib,"msimg32.lib")
+bool fastDraw = false;
+float barFade = 1;
+// While the panel moves, paints reuse one image each instead of allocating a full-window image per frame.
+struct Canvas { HBITMAP bitmap = nullptr; int wide = 0, tall = 0; };
+Canvas canvases[2];
+HBITMAP canvasFor(int slot, HDC reference, int wide, int tall, bool &owned) {
+  owned = !fastDraw;
+  if (owned)
+    return CreateCompatibleBitmap(reference, wide, tall);
+  auto &c = canvases[slot];
+  if (!c.bitmap || c.wide < wide || c.tall < tall) {
+    if (c.bitmap)
+      DeleteObject(c.bitmap);
+    c = {CreateCompatibleBitmap(reference, std::max(wide, c.wide), std::max(tall, c.tall)), std::max(wide, c.wide), std::max(tall, c.tall)};
+  }
+  return c.bitmap;
+}
+void releaseCanvases() {
+  for (auto &c : canvases) {
+    if (c.bitmap)
+      DeleteObject(c.bitmap);
+    c = {};
+  }
+}
+COLORREF mixColor(COLORREF from, COLORREF to, double t) {
+  t = std::clamp(t, 0., 1.);
+  return RGB(GetRValue(from) + (GetRValue(to) - GetRValue(from)) * t, GetGValue(from) + (GetGValue(to) - GetGValue(from)) * t,
+             GetBValue(from) + (GetBValue(to) - GetBValue(from)) * t);
+}
 int libraryDpi = 96;
 int px(int v){return MulDiv(v,libraryDpi,96);}
 int dip(int v){return MulDiv(v,96,libraryDpi);}
@@ -78,8 +110,10 @@ void drawCover(HDC dc,Gdiplus::Image *image,RECT r,float opacity=1){
   Smooth s(dc);auto box=frect(r);
   float iw=(float)image->GetWidth(),ih=(float)image->GetHeight();
   float scale=std::max(box.Width/iw,box.Height/ih),sw=box.Width/scale,sh=box.Height/scale;
+  if(fastDraw)s.g.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
   Gdiplus::ColorMatrix matrix={1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,opacity,0,0,0,0,0,1};
-  Gdiplus::ImageAttributes attributes;attributes.SetColorMatrix(&matrix);
+  Gdiplus::ImageAttributes attributes;
+  if(opacity<.999f)attributes.SetColorMatrix(&matrix);
   attributes.SetWrapMode(Gdiplus::WrapModeTileFlipXY);
   s.g.DrawImage(image,box,(iw-sw)/2,(ih-sh)/2,sw,sh,Gdiplus::UnitPixel,&attributes);
 }
@@ -248,7 +282,7 @@ std::unique_ptr<Gdiplus::Bitmap> readArtwork(const fs::path &path,bool thumbnail
     if(g.DrawImage(&file,Gdiplus::RectF(0,0,106,88),(sw-106*scale)/2,(sh-88*scale)/2,106*scale,88*scale,Gdiplus::UnitPixel)!=Gdiplus::Ok)return {};
     return thumb;
   }
-  return std::unique_ptr<Gdiplus::Bitmap>(file.Clone(0,0,file.GetWidth(),file.GetHeight(),PixelFormat32bppARGB));
+  return std::unique_ptr<Gdiplus::Bitmap>(file.Clone(0,0,file.GetWidth(),file.GetHeight(),PixelFormat32bppPARGB));
 }
 constexpr UINT PreviewReady=WM_APP+30;
 unsigned previewRequest=0;
@@ -977,15 +1011,15 @@ bool playbackBusy(){
   return forced || applyingPause || freezePending || (!paused && !batteryOverride && !covered && !source.empty() && !presented);
 }
 struct Cells{int cols,wide,tall,strip;};
-Cells cells(){
-  RECT r;GetClientRect(libraryScroll,&r);
-  if(!gridMode()){
+Cells cellsFor(RECT r,bool grid){
+  if(!grid){
     int strip=(int)libraryFiles.size()*px(72)>r.bottom?px(10):0;
     return {1,std::max(1,(int)r.right-strip),px(72),strip};
   }
   int usable=std::max(1,(int)r.right-px(10)),cols=std::max(1,usable/px(176)),wide=usable/cols;
   return {cols,wide,px((dip(wide)-16)*9/16+66),px(10)};
 }
+Cells cells(){RECT r;GetClientRect(libraryScroll,&r);return cellsFor(r,gridMode());}
 int scrollView(){RECT r;GetClientRect(libraryScroll,&r);return r.bottom;}
 int scrollContent(){auto c=cells();return ((int)libraryFiles.size()+c.cols-1)/c.cols*c.tall;}
 int scrollLimit(){return std::max(0,scrollContent()-scrollView());}
@@ -1150,6 +1184,39 @@ void openTileMenu(int i){
   ShowWindow(tileMenu,SW_SHOWNOACTIVATE);
   SetCapture(tileMenu);
 }
+unsigned cellKey(int i,bool grid,bool focus){
+  bool chosen=i==selectedRow,hot=i==hoveredRow;
+  return 128|(chosen?1:0)|(hot?2:0)|(chosen && focus?4:0)|(!_wcsicmp(libraryFiles[i].c_str(),source.c_str())?8:0)|
+         (paused||batteryOverride?16:0)|(grid?32:0)|(hot && hotMore?64:0);
+}
+void renderCell(HDC reference,HDC cell,int i,const Cells &c,unsigned key,bool grid,bool focus){
+  if((int)rowCache.size()<=i)rowCache.resize(libraryFiles.size());
+  if((int)tileImages.size()<=i)tileImages.resize(libraryFiles.size());
+  if(grid && !tileImages[i])tileImages[i]=readTile(artworkPath(libraryFiles[i]));
+  auto &kept=rowCache[i];
+  if(kept.bitmap)DeleteObject(kept.bitmap);
+  kept={CreateCompatibleBitmap(reference,c.wide,c.tall),key,c.wide,c.tall};
+  bool chosen=i==selectedRow,hot=i==hoveredRow;
+  auto before=SelectObject(cell,kept.bitmap);
+  drawCell(cell,{0,0,dip(c.wide),dip(c.tall)},i,chosen,hot,hot && hotMore,chosen && focus,grid);
+  SelectObject(cell,before);
+}
+// Renders the tiles that will be visible at the panel's final width before the motion starts.
+void warmCells(int panelWidth){
+  bool grid=panelWidth>=400;
+  if(!grid || !libraryScroll)return;
+  RECT r;GetClientRect(libraryScroll,&r);r.right=px(panelWidth-24);
+  auto c=cellsFor(r,grid);
+  int count=(int)libraryFiles.size(),first=(int)scrollOffset/c.tall*c.cols,last=std::min(count,first+((int)r.bottom/c.tall+2)*c.cols);
+  HDC dc=GetDC(libraryScroll),cell=CreateCompatibleDC(dc);
+  bool focus=GetFocus()==libraryScroll && keyboardCues(libraryScroll);
+  for(int i=first;i<last;i++){
+    unsigned key=cellKey(i,grid,focus);
+    if((int)rowCache.size()>i && rowCache[i].bitmap && rowCache[i].key==key && rowCache[i].wide==c.wide && rowCache[i].tall==c.tall)continue;
+    renderCell(dc,cell,i,c,key,grid,focus);
+  }
+  DeleteDC(cell);ReleaseDC(libraryScroll,dc);
+}
 LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
   switch(m){
   case WM_GETDLGCODE:return DLGC_WANTARROWS;
@@ -1161,7 +1228,7 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     PAINTSTRUCT ps;HDC dc=BeginPaint(w,&ps);
     RECT r;GetClientRect(w,&r);
     HDC buffer=CreateCompatibleDC(dc),cell=CreateCompatibleDC(dc);
-    HBITMAP bitmap=CreateCompatibleBitmap(dc,r.right,r.bottom);
+    bool owned;HBITMAP bitmap=canvasFor(0,dc,r.right,r.bottom,owned);
     auto old=SelectObject(buffer,bitmap);
     panel(buffer,r,cSidebar);
     auto c=cells();bool grid=gridMode(),focus=GetFocus()==w && keyboardCues(w);
@@ -1171,17 +1238,18 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     for(int i=0;i<count;i++){
       int x=i%c.cols*c.wide,y=i/c.cols*c.tall-offset;
       if(y+c.tall<=0 || y>=r.bottom)continue;
-      bool chosen=i==selectedRow,hot=i==hoveredRow;
-      unsigned key=128|(chosen?1:0)|(hot?2:0)|(chosen && focus?4:0)|(!_wcsicmp(libraryFiles[i].c_str(),source.c_str())?8:0)|
-                   (paused||batteryOverride?16:0)|(grid?32:0)|(hot && hotMore?64:0);
+      unsigned key=cellKey(i,grid,focus);
       auto &kept=rowCache[i];
       if(!kept.bitmap || kept.key!=key || kept.wide!=c.wide || kept.tall!=c.tall){
-        if(grid && !tileImages[i])tileImages[i]=readTile(artworkPath(libraryFiles[i]));
-        if(kept.bitmap)DeleteObject(kept.bitmap);
-        kept={CreateCompatibleBitmap(dc,c.wide,c.tall),key,c.wide,c.tall};
-        auto before=SelectObject(cell,kept.bitmap);
-        drawCell(cell,{0,0,dip(c.wide),dip(c.tall)},i,chosen,hot,hot && hotMore,chosen && focus,grid);
-        SelectObject(cell,before);
+        if(fastDraw && grid && kept.bitmap && kept.key==key){
+          // Mid-animation: scale the finished tile instead of redrawing it; the last frame redraws it sharp.
+          auto before=SelectObject(cell,kept.bitmap);
+          BLENDFUNCTION opaque{AC_SRC_OVER,0,255,0};
+          GdiAlphaBlend(buffer,x,y,c.wide,c.tall,cell,0,0,kept.wide,kept.tall,opaque);
+          SelectObject(cell,before);
+          continue;
+        }
+        renderCell(dc,cell,i,c,key,grid,focus);
       }
       auto before=SelectObject(cell,kept.bitmap);
       BitBlt(buffer,x,y,c.wide,c.tall,cell,0,0,SRCCOPY);
@@ -1191,7 +1259,7 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
     if(thumb.bottom>thumb.top)
       fillRound(buffer,{dip(thumb.left),dip(thumb.top),dip(thumb.right),dip(thumb.bottom)},scrollHot||scrollDragging?cMuted:cLine,2);
     BitBlt(dc,ps.rcPaint.left,ps.rcPaint.top,ps.rcPaint.right-ps.rcPaint.left,ps.rcPaint.bottom-ps.rcPaint.top,buffer,ps.rcPaint.left,ps.rcPaint.top,SRCCOPY);
-    SelectObject(buffer,old);DeleteObject(bitmap);DeleteDC(buffer);DeleteDC(cell);
+    SelectObject(buffer,old);if(owned)DeleteObject(bitmap);DeleteDC(buffer);DeleteDC(cell);
     EndPaint(w,&ps);return 0;
   }
   case WM_MOUSEWHEEL:
@@ -1265,10 +1333,25 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
   return DefWindowProc(w,m,a,b);
 }
 // The divider between the Library and the preview: drag to resize, click to expand or restore.
+std::vector<Clock::time_point> sideFrames;
+// Test hook: with LITELY_TEST_LOG set, each expand or collapse appends its frame timing.
+void logSideFrames(){
+  wchar_t log[MAX_PATH];
+  if(sideFrames.size()>1 && GetEnvironmentVariableW(L"LITELY_TEST_LOG",log,MAX_PATH)){
+    std::vector<double> gaps;
+    for(size_t i=1;i<sideFrames.size();i++)gaps.push_back(std::chrono::duration<double,std::milli>(sideFrames[i]-sideFrames[i-1]).count());
+    std::sort(gaps.begin(),gaps.end());
+    double total=std::chrono::duration<double,std::milli>(sideFrames.back()-sideFrames.front()).count();
+    std::wofstream out(log,std::ios::app);
+    out<<std::fixed<<std::setprecision(1)<<L"side frames "<<sideFrames.size()<<L" over "<<total<<L" ms, median "<<gaps[gaps.size()/2]
+       <<L" ms, worst "<<gaps.back()<<L" ms"<<std::endl;
+  }
+  sideFrames.clear();
+}
 bool splitHot=false,splitDrag=false,splitMoved=false,sideAnimating=false,sideTargetFull=false;
 int splitStartX=0,splitStartWidth=0;
 double sideFrom=0,sideTo=0;
-Clock::time_point sideStart;
+Clock::time_point sideStart,barStart;
 bool overSplit(POINT p){return p.y>65 && p.x>=sideWidth-9 && p.x<=sideWidth+10;}
 void applySide(int wanted,bool full){
   RECT client;GetClientRect(libraryWindow,&client);int cw=dip(client.right);
@@ -1292,8 +1375,11 @@ void toggleSide(){
   sideTargetFull=!sideFull;
   if(!sideFull)sideLast=sideWidth;
   sideFrom=sideWidth;sideTo=sideTargetFull?dip(client.right)-14:sideLast;
+  warmCells((int)sideTo);
+  fastDraw=true;
+  timeBeginPeriod(1);
   sideStart=Clock::now();sideAnimating=true;
-  SetTimer(libraryWindow,5,USER_TIMER_MINIMUM,nullptr);
+  SetTimer(libraryWindow,5,1,nullptr);
 }
 // Keep the native button's input, radio grouping and accessibility behavior.
 LRESULT CALLBACK uiButtonProc(HWND w,UINT m,WPARAM a,LPARAM b,UINT_PTR,DWORD_PTR){
@@ -1415,16 +1501,43 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       break;
     case WM_TIMER:
       if (a == 5) {
-        double t = std::min(1., std::chrono::duration<double, std::milli>(Clock::now() - sideStart).count() / 260);
-        double eased = 1 - (1 - t) * (1 - t) * (1 - t);
+        sideFrames.push_back(Clock::now());
+        double t = std::min(1., std::chrono::duration<double, std::milli>(Clock::now() - sideStart).count() / 300);
+        // Ease in and out, so the panel starts and settles gently instead of jumping on the first frame.
+        double eased = t < .5 ? 4 * t * t * t : 1 - std::pow(-2 * t + 2, 3) / 2;
         if (t >= 1) {
           KillTimer(w, 5);
-          sideAnimating = false;
+          timeEndPeriod(1);
+          sideAnimating = fastDraw = false;
+          releaseCanvases();
+          previewOpacity = 1;
+          if (sideTargetFull) {
+            barFade = 0;
+            barStart = Clock::now();
+            SetTimer(w, 7, 1, nullptr);
+          }
           applySide((int)sideTo, sideTargetFull);
           saveSide();
+          logSideFrames();
         } else
-          applySide((int)std::lround(sideFrom + (sideTo - sideFrom) * eased), false);
+        {
+          int next = (int)std::lround(sideFrom + (sideTo - sideFrom) * eased);
+          // The preview fades over the last 160 units before it is too narrow to show, so it never just vanishes.
+          RECT client;GetClientRect(w, &client);
+          previewOpacity = (float)std::clamp((dip(client.right) - next - 486) / 160., 0., 1.);
+          applySide(next, false);
+        }
         UpdateWindow(w);
+        // Wait for the compositor, so each frame lands on a screen refresh.
+        DwmFlush();
+        return 0;
+      }
+      if (a == 7) {
+        barFade = (float)std::min(1., std::chrono::duration<double, std::milli>(Clock::now() - barStart).count() / 220);
+        if (barFade >= 1)
+          KillTimer(w, 7);
+        RECT bar;GetClientRect(w, &bar);bar.top = bar.bottom - px(60);
+        InvalidateRect(w, &bar, FALSE);
         return 0;
       }
       if (a == 6) {
@@ -1502,12 +1615,14 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
     case WM_LBUTTONDOWN:{
       POINT press{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
       if(overSplit(press) && !sideAnimating){
-        splitDrag=true;splitMoved=false;splitStartX=press.x;splitStartWidth=sideWidth;
+        splitDrag=true;splitMoved=false;splitStartX=press.x;splitStartWidth=sideWidth;fastDraw=true;
         SetCapture(w);
       }
       return 0;
     }
-    case WM_CAPTURECHANGED:splitDrag=false;return 0;
+    case WM_CAPTURECHANGED:
+      if(splitDrag || fastDraw){splitDrag=fastDraw=false;releaseCanvases();RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);}
+      return 0;
     case WM_LBUTTONUP:{
       POINT click{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
       if(splitDrag){
@@ -1696,7 +1811,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       RECT r;
       GetClientRect(w, &r);
       HDC dc = CreateCompatibleDC(screen);
-      HBITMAP buffer = CreateCompatibleBitmap(screen, r.right, r.bottom);
+      bool owned;HBITMAP buffer = canvasFor(1, screen, r.right, r.bottom, owned);
       auto old = SelectObject(dc, buffer);
       RECT pixels=r;r=units(r);
       {UiDC mapping(dc);
@@ -1718,21 +1833,21 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       }
       int left=sideWidth+28,right=r.right-28;
       if(sideFull){
-        // With the preview hidden, playback state and usage sit in the bottom bar beside the action button.
+        // With the preview hidden, playback state and usage fade in and sit in the bottom bar beside the action button.
         int y=r.bottom-48,edge=r.right-28;
         const wchar_t *caption=actionCaption();
         edge-=(!wcscmp(caption,L"Set wallpaper")?128:!wcscmp(caption,L"Resume")?96:88)+22;
         for(int k=2;k>=0;k--){
           const auto &value=k==0?cpuValue:k==1?ramValue:gpuValue;
-          int used=paintText(dc,value,{edge-120,y,edge,y+36},13,cText,FW_SEMIBOLD,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
-          int label=paintText(dc,k==0?L"CPU":k==1?L"RAM":L"Video memory",{edge-used-116,y,edge-used-6,y+36},12,cMuted,FW_NORMAL,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
+          int used=paintText(dc,value,{edge-120,y,edge,y+36},13,mixColor(cWindow,cText,barFade),FW_SEMIBOLD,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
+          int label=paintText(dc,k==0?L"CPU":k==1?L"RAM":L"Video memory",{edge-used-116,y,edge-used-6,y+36},12,mixColor(cWindow,cMuted,barFade),FW_NORMAL,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
           edge-=used+6+label+22;
         }
         if(!source.empty() && edge>330){
           bool playing=!paused && !batteryOverride && !covered;
           const wchar_t *state=batteryOverride?L"Paused for Energy Saver":paused?L"Paused":covered?L"Desktop covered":L"Playing";
-          int used=paintText(dc,state,{262,y,edge,y+36},13,cSoft,FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
-          paintText(dc,displayName(source),{262+used+8,y,edge,y+36},13,playing?cAccent:cMuted,FW_SEMIBOLD,DT_VCENTER|DT_SINGLELINE);
+          int used=paintText(dc,state,{262,y,edge,y+36},13,mixColor(cWindow,cSoft,barFade),FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
+          paintText(dc,displayName(source),{262+used+8,y,edge,y+36},13,playing?mixColor(cWindow,cAccent,barFade):cMuted,FW_SEMIBOLD,DT_VCENTER|DT_SINGLELINE);
         }
       }else if(mainOff){
       }else if(settingsPage){
@@ -1748,57 +1863,77 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         {UiDC mapping(dc);panel(dc,art,cRaised);}
         RECT damage=units(ps.rcPaint),hit{};
         if(previewImage && IntersectRect(&hit,&art,&damage)){
-          drawCover(dc,previewImage.get(),art,previewOpacity);
+          static std::unique_ptr<Gdiplus::Bitmap> quick;static Gdiplus::Bitmap *quickOf=nullptr;static HBITMAP quickBitmap=nullptr;
+          if(fastDraw && quickOf!=previewImage.get()){
+            UINT iw=previewImage->GetWidth(),ih=previewImage->GetHeight(),sw=std::min(iw,960u),sh=std::max(1u,ih*sw/std::max(1u,iw));
+            quick=std::make_unique<Gdiplus::Bitmap>(sw,sh,PixelFormat32bppPARGB);
+            Gdiplus::Graphics g(quick.get());g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            g.DrawImage(previewImage.get(),0,0,sw,sh);
+            quickOf=previewImage.get();
+            if(quickBitmap)DeleteObject(quickBitmap);
+            quickBitmap=nullptr;quick->GetHBITMAP(Gdiplus::Color(255,38,40,54),&quickBitmap);
+          }
+          if(fastDraw && quickBitmap){
+            DeviceDC devicePixels(dc);
+            RECT box{px(art.left),px(art.top),px(art.right),px(art.bottom)};
+            double bw=box.right-box.left,bh=box.bottom-box.top,iw=quick->GetWidth(),ih=quick->GetHeight(),scale=std::max(bw/iw,bh/ih);
+            int sw=(int)(bw/scale),sh=(int)(bh/scale);
+            HDC image=CreateCompatibleDC(dc);auto before=SelectObject(image,quickBitmap);
+            BLENDFUNCTION blend{AC_SRC_OVER,0,(BYTE)(255*previewOpacity),0};
+            GdiAlphaBlend(dc,box.left,box.top,box.right-box.left,box.bottom-box.top,image,(int)(iw-sw)/2,(int)(ih-sh)/2,sw,sh,blend);
+            SelectObject(image,before);DeleteDC(image);
+          }else drawCover(dc,previewImage.get(),art,previewOpacity);
           Smooth s(dc);auto box=frect({art.left,art.bottom-120,art.right,art.bottom});
           Gdiplus::LinearGradientBrush shade(Gdiplus::PointF(0,box.Y-1),Gdiplus::PointF(0,box.GetBottom()+1),gdip(RGB(8,9,16),0),gdip(RGB(8,9,16),225));
           s.g.FillRectangle(&shade,box);
         }
-        if(i<0)paintIcon(dc,L"",{art.left,art.top,art.right,art.bottom-70},40,cMuted);
+        if(i<0)paintIcon(dc,L"",{art.left,art.top,art.right,art.bottom-70},40,mixColor(cWindow,cMuted,previewOpacity));
         roundCorners(dc,art,12,cWindow);
         std::wstring details=i>=0?videoDetails[i]+(isPlaybackCopy(libraryFiles[i])?L" · Playback copy":L" · Original file"):L"Use Add MP4 to import a video";
         std::wstring name=i>=0?displayName(libraryFiles[i]):L"Add your first wallpaper";
-        paintText(dc,details,{left+22,hero-82,right-18,hero-62},13,RGB(227,222,233));
+        paintText(dc,details,{left+22,hero-82,right-18,hero-62},13,mixColor(cRaised,RGB(227,222,233),previewOpacity));
         RECT nameBox{left+22,hero-60,right-58,hero-12};
         if(i>=0){
           HDC measure=CreateCompatibleDC(dc);
-          int nameWidth=paintText(measure,name,{0,0,0,0},34,cText,FW_SEMIBOLD,DT_CALCRECT|DT_SINGLELINE);
+          int nameWidth=paintText(measure,name,{0,0,0,0},34,mixColor(cWindow,cText,previewOpacity),FW_SEMIBOLD,DT_CALCRECT|DT_SINGLELINE);
           DeleteDC(measure);
           titleBox={left+10,hero-62,std::min(left+22+nameWidth,(int)nameBox.right)+48,hero-8};
           if(titleHot){
             fillRound(dc,titleBox,RGB(255,255,255),10,22);
             strokeRound(dc,titleBox,RGB(255,255,255),10,1.5f,120);
-            paintIcon(dc,L"",{titleBox.right-40,titleBox.top,titleBox.right-12,titleBox.bottom},18,cText);
+            paintIcon(dc,L"",{titleBox.right-40,titleBox.top,titleBox.right-12,titleBox.bottom},18,mixColor(cWindow,cText,previewOpacity));
           }
         }else titleBox={};
-        paintText(dc,name,nameBox,34,cText,FW_SEMIBOLD);
+        paintText(dc,name,nameBox,34,mixColor(cWindow,cText,previewOpacity),FW_SEMIBOLD);
         bool active=i>=0 && !_wcsicmp(libraryFiles[i].c_str(),source.c_str());
         bool playing=active && !paused && !batteryOverride && !covered;
         const wchar_t *state=i<0?L"":!active?L"Not on desktop":batteryOverride?L"Paused for Energy Saver":paused?L"Paused":
                             covered?L"Desktop covered":playingFile!=source?L"Playing · 30 fps on battery":L"Playing";
         const wchar_t *glyph=i<0?L"":!active?L"":playing?L"":L"";
-        paintIcon(dc,glyph,{left,hero+24,left+18,hero+44},14,playing?cAccent:cSoft);
-        paintText(dc,state,{left+26,hero+16,right-(!wcscmp(actionCaption(),L"Set wallpaper")?128:!wcscmp(actionCaption(),L"Resume")?96:88)-124,hero+52},13,cSoft,FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
+        paintIcon(dc,glyph,{left,hero+24,left+18,hero+44},14,playing?mixColor(cWindow,cAccent,previewOpacity):cSoft);
+        paintText(dc,state,{left+26,hero+16,right-(!wcscmp(actionCaption(),L"Set wallpaper")?128:!wcscmp(actionCaption(),L"Resume")?96:88)-124,hero+52},13,mixColor(cWindow,cSoft,previewOpacity),FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
         int divider=hero+68;
         {UiDC mapping(dc);panel(dc,{left,divider,right,divider+1},cLine);}
-        int headingEnd=left+paintText(dc,L"Litely usage",{left,divider+18,right,divider+40},15,cText,FW_SEMIBOLD);
+        int headingEnd=left+paintText(dc,L"Litely usage",{left,divider+18,right,divider+40},15,mixColor(cWindow,cText,previewOpacity),FW_SEMIBOLD);
         if(!source.empty())
-          paintText(dc,L"·  "+displayName(source),{headingEnd+10,divider+21,right,divider+40},12,cMuted);
+          paintText(dc,L"·  "+displayName(source),{headingEnd+10,divider+21,right,divider+40},12,mixColor(cWindow,cMuted,previewOpacity));
         int col=(right-left)/3;
         for(int k=0;k<3;k++){
           int x=left+col*k;
           if(k){UiDC mapping(dc);panel(dc,{x-1,divider+52,x,divider+98},cLine);x+=18;}
-          paintText(dc,k==0?L"CPU":k==1?L"RAM":L"Video memory",{x,divider+50,right,divider+68},12,cMuted);
+          paintText(dc,k==0?L"CPU":k==1?L"RAM":L"Video memory",{x,divider+50,right,divider+68},12,mixColor(cWindow,cMuted,previewOpacity));
           const auto &value=k==0?cpuValue:k==1?ramValue:gpuValue;
           size_t space=value.find(L' ');
-          int end=x+paintText(dc,value.substr(0,space),{x,divider+68,right,divider+98},23,cText,FW_SEMIBOLD,DT_LEFT|DT_TOP|DT_SINGLELINE,textFace());
+          int end=x+paintText(dc,value.substr(0,space),{x,divider+68,right,divider+98},23,mixColor(cWindow,cText,previewOpacity),FW_SEMIBOLD,DT_LEFT|DT_TOP|DT_SINGLELINE,textFace());
           if(space!=std::wstring::npos)
-            paintText(dc,value.substr(space+1),{end+4,divider+78,right,divider+98},12,cMuted);
+            paintText(dc,value.substr(space+1),{end+4,divider+78,right,divider+98},12,mixColor(cWindow,cMuted,previewOpacity));
         }
-        paintText(dc,savingsText,{left,divider+108,right,divider+142},12,cMuted,FW_NORMAL,DT_LEFT|DT_WORDBREAK);
+        paintText(dc,savingsText,{left,divider+108,right,divider+142},12,mixColor(cWindow,cMuted,previewOpacity),FW_NORMAL,DT_LEFT|DT_WORDBREAK);
       }
       BitBlt(screen, 0, 0, pixels.right, pixels.bottom, dc, 0, 0, SRCCOPY);
       SelectObject(dc, old);
-      DeleteObject(buffer);
+      if (owned)
+        DeleteObject(buffer);
       DeleteDC(dc);
       EndPaint(w, &ps);
       return 0;
@@ -1815,6 +1950,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       uiBrush = nullptr;
       libraryWindow = nullptr;
       closeTileMenu();
+      releaseCanvases();
       libraryList = libraryScroll = nullptr;
       selectedRow = -1;
       sideAnimating = splitDrag = false;
