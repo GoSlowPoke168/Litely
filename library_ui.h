@@ -831,9 +831,17 @@ void loadPreview() {
 }
 void placeList();
 void scrollReveal(int index,bool animate);
+// Finished row images, so scrolling copies pixels instead of redrawing rows.
+struct RowImage{HBITMAP bitmap=nullptr;unsigned key=0;int wide=0,tall=0;};
+std::vector<RowImage> rowCache;
+void clearRowCache(){
+  for(auto &row:rowCache)if(row.bitmap)DeleteObject(row.bitmap);
+  rowCache.clear();
+}
 void fillList(const fs::path &preferred = source) {
   SendMessage(libraryList,WM_SETREDRAW,FALSE,0);
   SendMessage(libraryList, LB_RESETCONTENT, 0, 0);
+  clearRowCache();
   rowImages.clear();
   videoDetails.clear();
   int selected = 0;
@@ -952,6 +960,8 @@ void setUiPage(bool settings) {
 // The list box is as tall as its rows and slides inside this viewport, so it scrolls by pixels, not rows.
 HWND libraryScroll=nullptr;
 double scrollOffset=0,scrollTarget=0;
+Clock::time_point scrollTick;
+bool scrollMoving=false;
 bool scrollHot=false,scrollDragging=false;
 int scrollGrab=0;
 int scrollView(){RECT r;GetClientRect(libraryScroll,&r);return r.bottom;}
@@ -977,7 +987,7 @@ void placeList(){
 }
 void scrollTo(double target,bool animate){
   scrollTarget=std::clamp(target,0.,(double)scrollLimit());
-  if(animate)SetTimer(libraryScroll,1,10,nullptr);
+  if(animate){if(!scrollMoving){scrollMoving=true;scrollTick=Clock::now();}SetTimer(libraryScroll,1,USER_TIMER_MINIMUM,nullptr);}
   else{scrollOffset=scrollTarget;placeList();}
 }
 void scrollReveal(int index,bool animate){
@@ -1014,9 +1024,12 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
   case WM_MOUSEWHEEL:
     scrollTo(scrollTarget-GET_WHEEL_DELTA_WPARAM(a)/120.*px(96),true);return 0;
   case WM_TIMER:{
-    double gap=scrollTarget-scrollOffset;
-    if(std::abs(gap)<.75){scrollOffset=scrollTarget;KillTimer(w,1);}
-    else scrollOffset+=gap*.3;
+    // Eased by elapsed time, so uneven timer ticks still move evenly.
+    auto now=Clock::now();
+    double gap=scrollTarget-scrollOffset,step=1-std::exp(-std::chrono::duration<double,std::milli>(now-scrollTick).count()/55);
+    scrollTick=now;
+    if(std::abs(gap)<.75){scrollOffset=scrollTarget;KillTimer(w,1);scrollMoving=false;}
+    else scrollOffset+=gap*step;
     placeList();UpdateWindow(libraryList);UpdateWindow(w);return 0;
   }
   case WM_LBUTTONDOWN:{
@@ -1349,6 +1362,20 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       HDC target=d->hDC;
       RECT bounds=d->rcItem;
       int widthPx=bounds.right-bounds.left,heightPx=bounds.bottom-bounds.top;
+      unsigned rowKey=0;
+      if(d->CtlID==100 && d->itemID<libraryFiles.size()){
+        bool chosen=(d->itemState&ODS_SELECTED)!=0;
+        rowKey=128|(chosen?1:0)|((int)d->itemID==hoveredRow?2:0)|(chosen && (d->itemState&ODS_FOCUS) && keyboardCues(d->hwndItem)?4:0)|
+               (!_wcsicmp(libraryFiles[d->itemID].c_str(),source.c_str())?8:0)|(paused||batteryOverride?16:0);
+        if(rowCache.size()<libraryFiles.size())rowCache.resize(libraryFiles.size());
+        auto &kept=rowCache[d->itemID];
+        if(kept.bitmap && kept.key==rowKey && kept.wide==widthPx && kept.tall==heightPx){
+          HDC memory=CreateCompatibleDC(target);auto before=SelectObject(memory,kept.bitmap);
+          BitBlt(target,bounds.left,bounds.top,widthPx,heightPx,memory,0,0,SRCCOPY);
+          SelectObject(memory,before);DeleteDC(memory);
+          return TRUE;
+        }
+      }
       HDC buffer=CreateCompatibleDC(target);
       HBITMAP bitmap=CreateCompatibleBitmap(target,widthPx,heightPx);
       if(!buffer || !bitmap){if(buffer)DeleteDC(buffer);if(bitmap)DeleteObject(bitmap);return FALSE;}
@@ -1381,7 +1408,12 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         drawButton(buffer,*d,r,style);
       }
       BitBlt(target,bounds.left,bounds.top,widthPx,heightPx,buffer,0,0,SRCCOPY);
-      SelectObject(buffer,old);DeleteObject(bitmap);DeleteDC(buffer);
+      SelectObject(buffer,old);DeleteDC(buffer);
+      if(rowKey){
+        auto &kept=rowCache[d->itemID];
+        if(kept.bitmap)DeleteObject(kept.bitmap);
+        kept={bitmap,rowKey,widthPx,heightPx};
+      }else DeleteObject(bitmap);
       return TRUE;
     }
     case WM_CTLCOLORLISTBOX:
@@ -1494,6 +1526,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       uiBrush = nullptr;
       libraryWindow = nullptr;
       libraryScroll = nullptr;
+      clearRowCache();
       scrollOffset = scrollTarget = 0;
       Gdiplus::GdiplusShutdown(graphicsToken);
       trimMemory();
