@@ -84,6 +84,11 @@ struct DirectState {
   unsigned referenceFrameNum = 0, frameNumOffset = 0, previousFrameNum = 0;
 };
 std::unique_ptr<DirectState> direct;
+// Test hook: LITELY_TEST_DIRECT_FAIL=N makes the Nth decode fail.
+unsigned directFailAfter = [] {
+  wchar_t value[16]{};
+  return GetEnvironmentVariableW(L"LITELY_TEST_DIRECT_FAIL", value, 16) ? unsigned(_wtoi(value)) : 0u;
+}();
 
 void directSps(const BYTE *nal, size_t size, DirectSps &s) {
   if (size < 4 || (nal[0] & 31) != 7)
@@ -223,6 +228,8 @@ template <class T> void directSend(DirectState &d, D3D11_VIDEO_DECODER_BUFFER_TY
 void directDecode() {
   DirectState &d = *direct;
   directPending = false;
+  if (directFailAfter && !--directFailAfter)
+    throw E_FAIL;
   const size_t index = d.next;
   const DirectSample &sample = d.samples[index];
   d.packet.resize(sample.size);

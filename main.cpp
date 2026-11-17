@@ -1116,6 +1116,8 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
         return 0;
       if (b == DirectFailed) {
         directFailedFor = playingFile;
+        if (probe)
+          report << L"direct decoder failed; falling back" << std::endl;
         closePlayer();
         if (!paused && !applyingPause)
           openPlayer();
