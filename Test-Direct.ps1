@@ -1,4 +1,4 @@
-# The direct GPU decoder against the lean path on the same converted file, plus its fallbacks.
+# The direct GPU decoder against the lean path on a copy made by Litely --convert, plus its fallbacks.
 param([string]$Clip = (Join-Path $PSScriptRoot 'build\wallpapers\hoshimi-miyabi-1080p.mp4'), [int]$Seconds = 12)
 $ErrorActionPreference = 'Stop'
 Add-Type @'
@@ -42,9 +42,9 @@ function Invoke-Probe($file, [hashtable]$Environment = @{}) {
 }
 $failures = @()
 try {
-    python (Join-Path $PSScriptRoot 'optimize.py') $Clip --height 0 --lowest-memory --output $scratch | Out-Null
+    $made = Start-Process $exe -ArgumentList ('--convert "{0}" "{1}" 0 0 1' -f $Clip, (Join-Path $scratch 'copy-lowmem.mp4')) -Wait -PassThru
     $converted = Get-ChildItem $scratch -Filter '*-lowmem.mp4' | Select-Object -First 1
-    if (!$converted) { throw 'optimize.py --lowest-memory produced no file' }
+    if ($made.ExitCode -or !$converted) { throw "Litely --convert made no lowest-memory copy (exit $($made.ExitCode))" }
     'converted copy: {0:N1} MiB (source {1:N1} MiB)' -f ($converted.Length / 1MB), ((Get-Item $Clip).Length / 1MB)
     $direct = Invoke-Probe $converted.FullName
     $lean = Invoke-Probe $converted.FullName @{ LITELY_PIPELINE = 'lean' }

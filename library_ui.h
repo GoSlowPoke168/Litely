@@ -510,8 +510,8 @@ INT_PTR CALLBACK removeProc(HWND w,UINT m,WPARAM a,LPARAM b){
   return FALSE;
 }
 struct ImportJob {
-  fs::path original, result, progress;
-  HANDLE process=nullptr, group=nullptr;
+  fs::path original, result;
+  std::unique_ptr<Transcode> copy;
   DWORD width=0,height=0,rate=0;
   ULONGLONG duration=0,bytes=0;
   int percent=-1,tick=0;
@@ -573,7 +573,7 @@ void paintImport(HWND w,HDC dc){
     }
   }
   RECT note{24,458,436,476};
-  if(job.process){
+  if(job.copy){
     if(job.percent>=0)swprintf_s(text,L"Converting…  %d%%",job.percent);else wcscpy_s(text,L"Converting…");
     paintText(dc,text,note,12,cSoft);
     RECT track{24,482,436,487};
@@ -588,20 +588,8 @@ void paintImport(HWND w,HDC dc){
                                      L"Plays your file directly. Nothing is copied.",note,12,cMuted);
 }
 void stopConversion(ImportJob &job,bool cancelled){
-  if(job.group){
-    if(cancelled){
-      TerminateJobObject(job.group,1);
-      for(int i=0;i<60;i++){
-        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info{};
-        if(!QueryInformationJobObject(job.group,JobObjectBasicAccountingInformation,&info,sizeof info,nullptr) || !info.ActiveProcesses)break;
-        Sleep(50);
-      }
-    }
-    CloseHandle(job.group);job.group=nullptr;
-  }
-  if(job.process){CloseHandle(job.process);job.process=nullptr;}
+  if(job.copy){transcodeStop(*job.copy,cancelled);job.copy.reset();}
   std::error_code ignored;
-  fs::remove(job.progress,ignored);
   if(cancelled){
     auto dir=job.result.parent_path();
     std::vector<fs::path> scratch;
@@ -614,15 +602,10 @@ void stopConversion(ImportJob &job,bool cancelled){
 fs::path copyDirectory(const fs::path &original){
   return folder/L"optimized"/posterPath(original).stem()/std::to_wstring(fs::last_write_time(original).time_since_epoch().count());
 }
-std::wstring conversionCommand(const fs::path &original,int limit,bool cap,const fs::path &progress,const fs::path &directory,bool lowest=false){
-  wchar_t exe[32768];GetModuleFileName(nullptr,exe,32768);
-  auto script=fs::path(exe).parent_path().parent_path()/L"optimize.py";
-  auto quote=[](const fs::path &v){return L"\""+v.wstring()+L"\"";};
-  return L"python "+quote(script)+L" --height "+std::to_wstring(limit)+(cap?L" --cap-fps":L"")+(lowest?L" --lowest-memory":L"")+
-         (progress.empty()?L"":L" --progress "+quote(progress))+L" --output "+quote(directory)+L" "+quote(original);
-}
 bool batteryFps=false,batteryCopyFailed=false;
-HANDLE batteryCopyProcess=nullptr,batteryCopyGroup=nullptr;
+// The battery copy's worker thread; main.cpp waits on it.
+HANDLE batteryCopyProcess=nullptr;
+std::unique_ptr<Transcode> batteryCopy;
 fs::path batteryCopyVideo;
 bool lowestCopy(const fs::path &video){
   auto stem=video.stem().wstring();
@@ -665,9 +648,9 @@ void updatePlayFile(){
 }
 void stopBatteryCopy(bool cancelled){
   ImportJob job;
-  job.process=batteryCopyProcess;job.group=batteryCopyGroup;job.result=batteryCopyPath(batteryCopyVideo);
+  job.copy=std::move(batteryCopy);job.result=batteryCopyPath(batteryCopyVideo);
   stopConversion(job,cancelled);
-  batteryCopyProcess=batteryCopyGroup=nullptr;batteryCopyVideo.clear();
+  batteryCopyProcess=nullptr;batteryCopyVideo.clear();
 }
 void refreshSettings();
 void updateBatteryCopy(){
@@ -678,28 +661,16 @@ void updateBatteryCopy(){
   if(wanted){readVideoDetails(source,nullptr,nullptr,&rate);wanted=rate>30500;}
   if(batteryCopyProcess && (!wanted || batteryCopyVideo!=source))stopBatteryCopy(true);
   if(!wanted || batteryCopyProcess)return;
-  auto command=conversionCommand(source,0,true,{},copy.parent_path(),lowestCopy(source));
   batteryCopyVideo=source;
-  batteryCopyGroup=CreateJobObject(nullptr,nullptr);
-  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-  limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-  STARTUPINFO startup{sizeof startup};PROCESS_INFORMATION process{};
-  if(batteryCopyGroup && SetInformationJobObject(batteryCopyGroup,JobObjectExtendedLimitInformation,&limits,sizeof limits) &&
-     CreateProcess(nullptr,command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_SUSPENDED|BELOW_NORMAL_PRIORITY_CLASS,nullptr,nullptr,&startup,&process)){
-    batteryCopyProcess=process.hProcess;
-    if(AssignProcessToJobObject(batteryCopyGroup,process.hProcess)){
-      ResumeThread(process.hThread);CloseHandle(process.hThread);
-      return;
-    }
-    TerminateProcess(process.hProcess,1);CloseHandle(process.hThread);
-  }
+  batteryCopy=std::make_unique<Transcode>();
+  batteryCopy->source=source;batteryCopy->destination=copy;batteryCopy->cap=true;batteryCopy->lowest=lowestCopy(source);
+  if(transcodeStart(*batteryCopy,THREAD_PRIORITY_BELOW_NORMAL)){batteryCopyProcess=batteryCopy->thread;return;}
   stopBatteryCopy(true);
   batteryCopyFailed=true;
   refreshSettings();
 }
 void finishBatteryCopy(){
-  DWORD code=1;
-  GetExitCodeProcess(batteryCopyProcess,&code);
+  DWORD code=transcodeStop(*batteryCopy,false);
   std::error_code ignored;
   auto copy=batteryCopyPath(batteryCopyVideo);
   bool made=code==0 && !copy.empty() && fs::exists(copy,ignored);
@@ -707,17 +678,6 @@ void finishBatteryCopy(){
   if(!made)batteryCopyFailed=true;
   else updatePlayFile();
   refreshSettings();
-}
-void readProgress(ImportJob &job){
-  std::ifstream in(job.progress,std::ios::binary);
-  if(!in || !job.duration)return;
-  in.seekg(0,std::ios::end);auto size=(long long)in.tellg();
-  in.seekg(std::max(0LL,size-2048));
-  std::string tail((std::istreambuf_iterator<char>(in)),{});
-  auto at=tail.rfind("out_time_us=");
-  if(at==std::string::npos)return;
-  long long micro=_atoi64(tail.c_str()+at+12);
-  if(micro>0)job.percent=(int)std::min(99LL,micro*1000/(long long)job.duration);
 }
 INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   auto job=reinterpret_cast<ImportJob*>(GetWindowLongPtr(w,DWLP_USER));
@@ -747,7 +707,7 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   if(auto result=dialogTheme(w,msg,a,b,paintImport))return result;
   if(!job)return FALSE;
   if(msg==WM_INITDIALOG){SetFocus(GetDlgItem(w,301));return FALSE;}
-  if(msg==WM_DESTROY && job->process){KillTimer(w,1);stopConversion(*job,true);return FALSE;}
+  if(msg==WM_DESTROY && job->copy){KillTimer(w,1);stopConversion(*job,true);return FALSE;}
   if(msg==WM_NOTIFY){
     auto header=reinterpret_cast<NMHDR*>(b);
     if(header->code==NM_CUSTOMDRAW && header->idFrom>=301 && header->idFrom<=308){
@@ -770,29 +730,29 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
     for(int id=301;id<=308;id++)InvalidateRect(GetDlgItem(w,id),nullptr,FALSE);
     InvalidateRect(w,nullptr,FALSE);return TRUE;
   }
-  if(msg==WM_TIMER && job->process){
+  if(msg==WM_TIMER && job->copy){
     job->tick++;
-    if(WaitForSingleObject(job->process,0)==WAIT_OBJECT_0){
-      DWORD code=1;GetExitCodeProcess(job->process,&code);
+    if(WaitForSingleObject(job->copy->thread,0)==WAIT_OBJECT_0){
+      DWORD code=transcodeStop(*job->copy,false);
       KillTimer(w,1);stopConversion(*job,false);
       std::error_code ignored;
       if(code || !fs::exists(job->result,ignored)){
         stopConversion(*job,true);
-        MessageBox(w,L"Conversion failed. Making a playback copy needs Python with FFmpeg on PATH or the imageio-ffmpeg package.",L"Litely",MB_ICONERROR);
+        MessageBox(w,L"Litely couldn't convert this video. Your original file is unchanged.",L"Litely",MB_ICONERROR);
         EndDialog(w,0);
       }else EndDialog(w,1);
       return TRUE;
     }
-    readProgress(*job);
+    job->percent=job->copy->percent;
     DpiScope scale(GetDpiForWindow(w));
     RECT bar{px(24),px(454),px(436),px(490)};InvalidateRect(w,&bar,FALSE);
     return TRUE;
   }
   if(msg==WM_CLOSE || (msg==WM_COMMAND && LOWORD(a)==IDCANCEL)){
-    if(job->process){KillTimer(w,1);stopConversion(*job,true);}
+    if(job->copy){KillTimer(w,1);stopConversion(*job,true);}
     EndDialog(w,0);return TRUE;
   }
-  if(msg!=WM_COMMAND || LOWORD(a)!=IDOK || job->process)return FALSE;
+  if(msg!=WM_COMMAND || LOWORD(a)!=IDOK || job->copy)return FALSE;
   bool cap=IsDlgButtonChecked(w,306)!=0;
   int limit=chosenLimit(w);
   if(!convertChoice(w)){job->result=job->original;EndDialog(w,1);return TRUE;}
@@ -803,23 +763,13 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   auto dir=copyDirectory(job->original);
   job->result=dir/(job->original.stem().wstring()+L"-"+suffix+L".mp4");
   if(fs::exists(job->result)){EndDialog(w,1);return TRUE;}
-  job->progress=dir/(suffix+L".progress");
-  auto command=conversionCommand(job->original,limit,cap,job->progress,dir,lowest);
-  job->group=CreateJobObject(nullptr,nullptr);
-  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-  limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-  STARTUPINFO startup{sizeof startup};PROCESS_INFORMATION process{};
-  if(!job->group || !SetInformationJobObject(job->group,JobObjectExtendedLimitInformation,&limits,sizeof limits) ||
-     !CreateProcess(nullptr,command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_SUSPENDED,nullptr,nullptr,&startup,&process)){
-    stopConversion(*job,false);
-    MessageBox(w,L"Could not start Python to make the playback copy.",L"Litely",MB_ICONERROR);return TRUE;
-  }
-  job->process=process.hProcess;
-  if(!AssignProcessToJobObject(job->group,process.hProcess)){
-    TerminateProcess(process.hProcess,1);CloseHandle(process.hThread);stopConversion(*job,false);
+  job->copy=std::make_unique<Transcode>();
+  job->copy->source=job->original;job->copy->destination=job->result;
+  job->copy->limit=limit;job->copy->cap=cap;job->copy->lowest=lowest;
+  if(!transcodeStart(*job->copy,THREAD_PRIORITY_NORMAL)){
+    job->copy.reset();
     MessageBox(w,L"Could not start the conversion.",L"Litely",MB_ICONERROR);return TRUE;
   }
-  ResumeThread(process.hThread);CloseHandle(process.hThread);
   for(int id:{301,302,303,305,306,307,308,IDOK})EnableWindow(GetDlgItem(w,id),FALSE);
   SetFocus(GetDlgItem(w,IDCANCEL));
   SetTimer(w,1,100,nullptr);InvalidateRect(w,nullptr,FALSE);
@@ -1612,7 +1562,7 @@ const wchar_t *choiceDescription(int id){
     return text.c_str();
   }
   if(id==113)return L"";
-  if(id==111)return batteryCopyFailed?L"Couldn't make the 30 fps copy. Needs Python with FFmpeg.":
+  if(id==111)return batteryCopyFailed?L"Couldn't make the 30 fps copy of this video.":
                                       L"On battery, plays a 30 fps copy of wallpapers above 30 fps. The copy is made once, in the background.";
   return id==103?L"Resumes instantly when the desktop is uncovered. Keeps video memory reserved.":
          id==104?L"Releases video memory while paused or covered. Resuming takes a moment longer.":

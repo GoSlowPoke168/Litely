@@ -42,11 +42,11 @@ function Stop-Litely($app) {
     if (!$app.WaitForExit(5000)) { $app.Kill(); throw 'Litely did not exit' }
 }
 function Get-Copies($data) { @(Get-ChildItem (Join-Path $data 'Litely\optimized') -Recurse -Filter '*-original-30fps.mp4' -ErrorAction SilentlyContinue) }
-function Get-Descendants($id) {
-    $all = Get-CimInstance Win32_Process
-    $found = @(); $queue = @($id)
-    while ($queue) { $next = @($all | Where-Object { $_.ParentProcessId -in $queue }); $found += $next; $queue = $next.ProcessId }
-    $found
+# A conversion in progress writes a .part file next to where the copy will go.
+function Get-Partial($data) { @(Get-ChildItem (Join-Path $data 'Litely\optimized') -Recurse -Filter '*.part' -ErrorAction SilentlyContinue) }
+function Watch-Partial($data, $seconds) {
+    for ($i = 0; $i -lt $seconds * 10; $i++) { if (Get-Partial $data) { return $true }; Start-Sleep -Milliseconds 100 }
+    $false
 }
 $folders = @()
 try {
@@ -62,31 +62,25 @@ try {
     'copy made once: ' + $copies[0].Name
     $written = $copies[0].LastWriteTimeUtc
     $app = Start-Litely $data
-    Start-Sleep -Seconds 10
-    $children = @(Get-Descendants $app.Id | Where-Object Name -match 'python|ffmpeg')
+    $started = Watch-Partial $data 10
     Stop-Litely $app
-    if ($children) { throw 'A conversion started although the copy exists' }
+    if ($started) { throw 'A conversion started although the copy exists' }
     if ((Get-Copies $data)[0].LastWriteTimeUtc -ne $written) { throw 'The existing copy was rewritten' }
     'existing copy reused'
     foreach ($case in @{ Clip = $furina; Fps = 1; Name = '30 fps source' }, @{ Clip = $miyabi; Fps = 0; Name = 'setting off' }) {
         $data = New-Data $case.Clip $case.Fps; $folders += $data
         $app = Start-Litely $data
-        Start-Sleep -Seconds 15
-        $children = @(Get-Descendants $app.Id | Where-Object Name -match 'python|ffmpeg')
+        $started = Watch-Partial $data 15
         Stop-Litely $app
-        if ($children -or (Get-Copies $data)) { throw "$($case.Name): a copy was started" }
+        if ($started -or (Get-Copies $data)) { throw "$($case.Name): a copy was started" }
         "$($case.Name): no copy"
     }
     $data = New-Data $miyabi 1; $folders += $data
     $app = Start-Litely $data
-    Start-Sleep -Milliseconds 700
-    $children = @(Get-Descendants $app.Id)
-    if (!$children) { Stop-Litely $app; throw 'No conversion was running shortly after launch' }
+    if (!(Watch-Partial $data 5)) { Stop-Litely $app; throw 'No conversion was running shortly after launch' }
     Stop-Litely $app
-    Start-Sleep -Seconds 3
-    $alive = @($children | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
-    if ($alive) { throw "Conversion survived exit: $($alive.Name -join ', ')" }
-    if (Get-Copies $data) { throw 'A partial copy was left behind' }
+    Start-Sleep -Seconds 1
+    if ((Get-Partial $data) -or (Get-Copies $data)) { throw 'A partial copy was left behind' }
     'exit cancels the conversion'
 } finally {
     Get-Process Litely -ErrorAction SilentlyContinue | Stop-Process

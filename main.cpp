@@ -943,6 +943,7 @@ void selectFile() {
   }
   activateSource(path);
 }
+#include "transcode.h"
 #include "library_ui.h"
 bool menuOpen = false, menuDismissed = false;
 DWORD menuDismissTime = 0;
@@ -1242,6 +1243,16 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
   int argc;
   auto argv = CommandLineToArgvW(GetCommandLine(), &argc);
   probe = argc == 4 && !wcscmp(argv[1], L"--probe");
+  // For tests: --convert source destination height cap(0|1) lowest(0|1), exit code 0 when the copy was made.
+  if (argc == 7 && !wcscmp(argv[1], L"--convert")) {
+    Transcode copy;
+    copy.source = argv[2];
+    copy.destination = argv[3];
+    copy.limit = _wtoi(argv[4]);
+    copy.cap = _wtoi(argv[5]) != 0;
+    copy.lowest = _wtoi(argv[6]) != 0;
+    return transcodeStart(copy, THREAD_PRIORITY_NORMAL) ? int(transcodeStop(copy, false)) : 1;
+  }
   HANDLE singleton = nullptr;
   if (!probe) {
     singleton = CreateMutex(nullptr, FALSE, L"Local\\Litely.Tray");
