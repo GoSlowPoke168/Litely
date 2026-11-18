@@ -188,6 +188,8 @@ std::wstring cleanName(std::wstring name){
 std::wstring readVideoDetails(const fs::path &path,DWORD *widthOut=nullptr,DWORD *heightOut=nullptr,DWORD *rateOut=nullptr,ULONGLONG *durationOut=nullptr) {
   ComPtr<IPropertyStore> properties;
   std::wstring details;
+  DWORD frameWidth = 0, frameHeight = 0, rate = 0;
+  ULONGLONG duration = 0;
   if (SUCCEEDED(SHGetPropertyStoreFromParsingName(path.c_str(), nullptr, GPS_DEFAULT,
                                                   IID_PPV_ARGS(&properties)))) {
     auto number = [&](REFPROPERTYKEY key) {
@@ -198,24 +200,34 @@ std::wstring readVideoDetails(const fs::path &path,DWORD *widthOut=nullptr,DWORD
       PropVariantClear(&value);
       return result;
     };
-    auto frameHeight = number(PKEY_Video_FrameHeight);
-    auto rate = number(PKEY_Video_FrameRate);
-    if(widthOut)*widthOut=number(PKEY_Video_FrameWidth);
-    if(heightOut)*heightOut=frameHeight;
-    if(rateOut)*rateOut=rate;
-    if(durationOut){
-      PROPVARIANT value{};
-      if(SUCCEEDED(properties->GetValue(PKEY_Media_Duration,&value)) && value.vt==VT_UI8)*durationOut=value.uhVal.QuadPart;
-      PropVariantClear(&value);
-    }
-    if (frameHeight) details = std::to_wstring(frameHeight) + L"p";
-    if (rate) {
-      wchar_t fps[32];
-      swprintf_s(fps, rate % 1000 ? L"%.2f" : L"%.0f", rate / 1000.);
-      details += (details.empty()?L"":L" · ") + std::wstring(fps) + L" fps";
+    frameWidth = number(PKEY_Video_FrameWidth);
+    frameHeight = number(PKEY_Video_FrameHeight);
+    rate = number(PKEY_Video_FrameRate);
+    PROPVARIANT value{};
+    if(SUCCEEDED(properties->GetValue(PKEY_Media_Duration,&value)) && value.vt==VT_UI8)duration=value.uhVal.QuadPart;
+    PropVariantClear(&value);
+  }
+  // Windows' file properties miss some formats, such as GIF and WebM.
+  if (!frameWidth || !frameHeight || !rate) {
+    DWORD w = 0, h = 0, r = 0;
+    ULONGLONG d = 0;
+    if (videoFacts(path, w, h, r, d)) {
+      if (!frameWidth || !frameHeight) frameWidth = w, frameHeight = h;
+      if (!rate) rate = r;
+      if (!duration) duration = d;
     }
   }
-  return details.empty()?L"MP4 video":details;
+  if(widthOut)*widthOut=frameWidth;
+  if(heightOut)*heightOut=frameHeight;
+  if(rateOut)*rateOut=rate;
+  if(durationOut)*durationOut=duration;
+  if (frameHeight) details = std::to_wstring(frameHeight) + L"p";
+  if (rate) {
+    wchar_t fps[32];
+    swprintf_s(fps, rate % 1000 ? L"%.2f" : L"%.0f", rate / 1000.);
+    details += (details.empty()?L"":L" · ") + std::wstring(fps) + L" fps";
+  }
+  return details.empty()?L"Video":details;
 }
 bool isPlaybackCopy(const fs::path &video){
   auto copies=(folder/L"optimized").wstring()+L"\\";
@@ -584,7 +596,7 @@ void paintImport(HWND w,HDC dc){
          fill.left=std::max(track.left,track.left+offset);fill.right=std::min(track.right,track.left+offset+span);}
     if(fill.right>fill.left)fillRound(dc,fill,cAccent,2.5f);
   }else paintText(dc,lowest?L"Creates a larger copy that needs the least memory. Your original file is kept.":
-                     convertChoice(w)?L"Creates an H.264 playback copy in Litely's folder. Your original file is kept.":
+                     convertChoice(w) || needsCopy(job.original)?L"Creates an H.264 playback copy in Litely's folder. Your original file is kept.":
                                      L"Plays your file directly. Nothing is copied.",note,12,cMuted);
 }
 void stopConversion(ImportJob &job,bool cancelled){
@@ -679,6 +691,23 @@ void finishBatteryCopy(){
   else updatePlayFile();
   refreshSettings();
 }
+// Names the missing Store extension when Windows recognised the video's format but has no decoder for it.
+std::wstring conversionError(const Transcode &copy){
+  std::wstring unchanged=L" Your original file is unchanged.";
+  if(copy.error==MF_E_UNSUPPORTED_BYTESTREAM_TYPE || copy.error==MF_E_UNSUPPORTED_FORMAT)
+    return L"Windows can't open this kind of file, so Litely can't use it."+unchanged;
+  if(copy.error==MF_E_TOPO_CODEC_NOT_FOUND || copy.error==MF_E_INVALIDMEDIATYPE){
+    struct Codec{GUID format;const wchar_t *name,*extension;};
+    const Codec codecs[]={{MFVideoFormat_HEVC,L"HEVC",L"HEVC Video Extensions"},{MFVideoFormat_AV1,L"AV1",L"AV1 Video Extension"},
+                          {MFVideoFormat_VP90,L"VP9",L"VP9 Video Extensions"},{MFVideoFormat_MPEG2,L"MPEG-2",L"MPEG-2 Video Extension"}};
+    for(auto &codec:codecs)
+      if(copy.codec==codec.format)
+        return L"This video uses "+std::wstring(codec.name)+L", which Windows can't decode yet. Install "+codec.extension+
+               L" from the Microsoft Store, then add the video again."+unchanged;
+    return L"Windows doesn't have a decoder for this video's format, so Litely can't convert it."+unchanged;
+  }
+  return L"Litely couldn't convert this video."+unchanged;
+}
 INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   auto job=reinterpret_cast<ImportJob*>(GetWindowLongPtr(w,DWLP_USER));
   if(msg==WM_INITDIALOG){
@@ -688,21 +717,21 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
     std::error_code ignored;job->bytes=fs::file_size(job->original,ignored);
     DpiScope scale(GetDpiForWindow(w));
     sizeDialog(w,460,550);
-    placeDip(w,301,14,110,150,32);placeDip(w,302,168,110,110,32);placeDip(w,303,282,110,110,32);
-    placeDip(w,305,14,180,150,32);placeDip(w,306,168,180,110,32);
-    placeDip(w,307,14,250,150,32);placeDip(w,308,168,250,150,32);
+    placeDip(w,301,14,110,174,32);placeDip(w,302,192,110,110,32);placeDip(w,303,306,110,110,32);
+    placeDip(w,305,14,180,174,32);placeDip(w,306,192,180,110,32);
+    placeDip(w,307,14,250,174,32);placeDip(w,308,192,250,150,32);
     placeDip(w,IDCANCEL,340,498,96,36);placeDip(w,IDOK,236,498,96,36);
     std::wstring original=L"Original";
     if(job->height)original+=L" ("+std::to_wstring(job->height)+L"p)";
     SetDlgItemText(w,301,original.c_str());
     wchar_t rate[48]=L"Original";
-    if(job->rate)swprintf_s(rate,job->rate%1000?L"Original (%.2f fps)":L"Original (%.0f fps)",job->rate/1000.);
+    if(job->rate)swprintf_s(rate,!(job->rate%1000)?L"Original (%.0f fps)":!(job->rate%100)?L"Original (%.1f fps)":L"Original (%.2f fps)",job->rate/1000.);
     SetDlgItemText(w,305,rate);
     bool known=job->width && job->height;
     EnableWindow(GetDlgItem(w,302),!known || importScale(*job,1080)<1);
     EnableWindow(GetDlgItem(w,303),!known || importScale(*job,720)<1);
     EnableWindow(GetDlgItem(w,306),!job->rate || job->rate>30500);
-    CheckRadioButton(w,301,303,301);CheckRadioButton(w,305,306,305);CheckRadioButton(w,307,308,307);
+    CheckRadioButton(w,301,303,301);CheckRadioButton(w,305,306,305);CheckRadioButton(w,307,308,308);
   }
   if(auto result=dialogTheme(w,msg,a,b,paintImport))return result;
   if(!job)return FALSE;
@@ -734,11 +763,12 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
     job->tick++;
     if(WaitForSingleObject(job->copy->thread,0)==WAIT_OBJECT_0){
       DWORD code=transcodeStop(*job->copy,false);
+      auto problem=conversionError(*job->copy);
       KillTimer(w,1);stopConversion(*job,false);
       std::error_code ignored;
       if(code || !fs::exists(job->result,ignored)){
         stopConversion(*job,true);
-        MessageBox(w,L"Litely couldn't convert this video. Your original file is unchanged.",L"Litely",MB_ICONERROR);
+        MessageBox(w,problem.c_str(),L"Litely",MB_ICONERROR);
         EndDialog(w,0);
       }else EndDialog(w,1);
       return TRUE;
@@ -755,7 +785,7 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   if(msg!=WM_COMMAND || LOWORD(a)!=IDOK || job->copy)return FALSE;
   bool cap=IsDlgButtonChecked(w,306)!=0;
   int limit=chosenLimit(w);
-  if(!convertChoice(w)){job->result=job->original;EndDialog(w,1);return TRUE;}
+  if(!convertChoice(w) && !needsCopy(job->original)){job->result=job->original;EndDialog(w,1);return TRUE;}
   std::wstring size=std::to_wstring(limit),suffix=limit?size+L"p":L"original";
   bool lowest=IsDlgButtonChecked(w,308)!=0;
   if(cap)suffix+=L"-30fps";
@@ -774,6 +804,31 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   SetFocus(GetDlgItem(w,IDCANCEL));
   SetTimer(w,1,100,nullptr);InvalidateRect(w,nullptr,FALSE);
   return TRUE;
+}
+// Picks a video and shows the Import window. Returns the file to play, or nothing when cancelled.
+fs::path importVideo(HWND owner,const wchar_t *initialDir){
+  wchar_t path[32768]{};
+  auto filter=videoFilter();
+  OPENFILENAME of{sizeof of};
+  of.hwndOwner=owner;
+  of.lpstrFilter=filter.c_str();
+  of.lpstrFile=path;
+  of.nMaxFile=32768;
+  of.lpstrInitialDir=initialDir;
+  of.Flags=OFN_EXPLORER|OFN_FILEMUSTEXIST|OFN_NOCHANGEDIR;
+  if(!GetOpenFileName(&of))return {};
+  ImportJob job{fs::path(path),{}};
+  // The Import window draws with GDI+, which the tray menu's path hasn't started.
+  Gdiplus::GdiplusStartupInput input;ULONG_PTR token=0;
+  bool drawing=Gdiplus::GdiplusStartup(&token,&input,nullptr)==Gdiplus::Ok;
+  auto chosen=DialogBoxParam(instance,MAKEINTRESOURCE(300),owner,importProc,(LPARAM)&job);
+  if(drawing)Gdiplus::GdiplusShutdown(token);
+  if(chosen!=1)return {};
+  if(job.result!=job.original){
+    auto key=posterPath(job.result).stem().wstring();
+    WritePrivateProfileString(L"names",key.c_str(),displayName(job.original).c_str(),(folder/L"library-names.ini").c_str());
+  }
+  return job.result;
 }
 INT_PTR CALLBACK renameProc(HWND dialog,UINT message,WPARAM a,LPARAM b){
   if(message==WM_INITDIALOG){
@@ -1596,7 +1651,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       }
       loadAccent();
       refreshAccent();
-      control(L"BUTTON", L"Add MP4", BS_OWNERDRAW, 101);
+      control(L"BUTTON", L"Add video", BS_OWNERDRAW, 101);
       control(L"BUTTON", L"Set wallpaper", BS_OWNERDRAW, 102);
       control(L"BUTTON", L"Smooth resume", BS_AUTORADIOBUTTON | WS_GROUP, 103);
       control(L"BUTTON", L"Maximum savings", BS_AUTORADIOBUTTON, 104);
@@ -1878,24 +1933,12 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         return 0;
       }
       if (id == 101) {
-        wchar_t path[32768]{};
-        OPENFILENAME of{sizeof of};
-        of.hwndOwner = w;
-        of.lpstrFilter = L"MP4 video\0*.mp4\0";
-        of.lpstrFile = path;
-        of.nMaxFile = 32768;
-        of.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-        if (GetOpenFileName(&of)) {
+        auto added = importVideo(w, nullptr);
+        if (!added.empty()) {
           setUiPage(false);
-          ImportJob job{fs::path(path),{}};
-          if(DialogBoxParam(instance,MAKEINTRESOURCE(300),w,importProc,(LPARAM)&job)!=1)return 0;
-          if(job.result!=job.original){
-            auto key=posterPath(job.result).stem().wstring();
-            WritePrivateProfileString(L"names",key.c_str(),displayName(job.original).c_str(),(folder/L"library-names.ini").c_str());
-          }
-          addLibrary(job.result);
+          addLibrary(added);
           saveLibrary();
-          fillList(fs::weakly_canonical(job.result));
+          fillList(fs::weakly_canonical(added));
         }
       }
 
@@ -1905,7 +1948,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if (i >= 0) {
           if (!fs::exists(libraryFiles[i])) {
             MessageBox(
-                w, L"This video has moved. Add its new location with Add MP4.",
+                w, L"This video has moved. Add its new location with Add video.",
                 L"Litely", MB_OK);
             return 0;
           }
@@ -2119,7 +2162,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         }
         if(i<0)paintIcon(dc,L"",{art.left,art.top,art.right,art.bottom-70},40,mixColor(cWindow,cMuted,previewOpacity));
         roundCorners(dc,art,12,cWindow);
-        std::wstring details=i>=0?videoDetails[i]+(isPlaybackCopy(libraryFiles[i])?L" · Playback copy":L" · Original file"):L"Use Add MP4 to import a video";
+        std::wstring details=i>=0?videoDetails[i]+(isPlaybackCopy(libraryFiles[i])?L" · Playback copy":L" · Original file"):L"Use Add video to import a video";
         std::wstring name=i>=0?displayName(libraryFiles[i]):L"Add your first wallpaper";
         paintText(dc,details,{left+22,hero-82,right-18,hero-62},13,mixColor(cRaised,RGB(227,222,233),previewOpacity));
         RECT nameBox{left+22,hero-60,right-58,hero-12};
@@ -2235,7 +2278,7 @@ void openLibrary(bool settings = false) {
   auto samples = fs::path(exe).parent_path() / L"wallpapers";
   if (!fs::exists(path) && fs::exists(samples))
     for (auto &file : fs::directory_iterator(samples))
-      if (file.path().extension() == L".mp4")
+      if (isVideoFile(file.path()) && !needsCopy(file.path()))
         addLibrary(file.path());
   saveLibrary();
   Gdiplus::GdiplusStartupInput input;

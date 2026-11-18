@@ -933,20 +933,13 @@ void activateSource(const fs::path &path) {
   updateBatteryCopy();
   visibility();
 }
+fs::path importVideo(HWND owner, const wchar_t *initialDir);
 void selectFile() {
-  wchar_t path[32768]{};
-  OPENFILENAME of{sizeof(of)};
-  of.hwndOwner = controller;
-  of.lpstrFilter = L"MP4 video\0*.mp4\0";
-  of.lpstrFile = path;
-  of.nMaxFile = 32768;
-  of.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
   wchar_t exe[32768];
   GetModuleFileName(nullptr, exe, 32768);
   auto samples = fs::path(exe).parent_path() / L"wallpapers";
-  if (fs::is_directory(samples))
-    of.lpstrInitialDir = samples.c_str();
-  if (!GetOpenFileName(&of))
+  auto path = importVideo(controller, fs::is_directory(samples) ? samples.c_str() : nullptr);
+  if (path.empty())
     return;
   if (!paused && !source.empty() && posterPath(path) == posterPath(source)) {
     preparePoster(true);
@@ -967,7 +960,7 @@ void menu(const POINT *anchor) {
   AppendMenu(m, MF_STRING, 10, L"Open Litely");
   SetMenuDefaultItem(m, 10, FALSE);
   AppendMenu(m, MF_STRING | (applyingPause ? MF_GRAYED : 0), 1,
-             L"Choose MP4...");
+             L"Choose video...");
   AppendMenu(m, MF_STRING | (source.empty() ? MF_GRAYED : 0), 2,
              paused ? L"Resume" : L"Pause on this frame");
   AppendMenu(m, MF_SEPARATOR, 0, nullptr);
@@ -1255,7 +1248,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
   int argc;
   auto argv = CommandLineToArgvW(GetCommandLine(), &argc);
   probe = argc == 4 && !wcscmp(argv[1], L"--probe");
-  // For tests: --convert source destination height cap(0|1) lowest(0|1), exit code 0 when the copy was made.
+  // For tests: --convert source destination height cap(0|1) lowest(0|1); exits 0 when the copy was made, else the error.
   if (argc == 7 && !wcscmp(argv[1], L"--convert")) {
     Transcode copy;
     copy.source = argv[2];
@@ -1263,7 +1256,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
     copy.limit = _wtoi(argv[4]);
     copy.cap = _wtoi(argv[5]) != 0;
     copy.lowest = _wtoi(argv[6]) != 0;
-    return transcodeStart(copy, THREAD_PRIORITY_NORMAL) ? int(transcodeStop(copy, false)) : 1;
+    return transcodeStart(copy, THREAD_PRIORITY_NORMAL) ? (transcodeStop(copy, false) ? int(copy.error) : 0) : 1;
   }
   HANDLE singleton = nullptr;
   if (!probe) {
