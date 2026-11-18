@@ -224,7 +224,19 @@ void playerSeek(double seconds) {
 void createDevice() {
   UINT flags =
       D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-  check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+  // Test hook: LITELY_TEST_ADAPTER picks the GPU whose name contains this text.
+  ComPtr<IDXGIAdapter1> chosen;
+  wchar_t want[64]{};
+  if (GetEnvironmentVariableW(L"LITELY_TEST_ADAPTER", want, 64)) {
+    ComPtr<IDXGIFactory1> factory;
+    check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
+    for (UINT i = 0; factory->EnumAdapters1(i, &chosen) == S_OK; i++, chosen.Reset()) {
+      DXGI_ADAPTER_DESC1 about;
+      if (SUCCEEDED(chosen->GetDesc1(&about)) && wcsstr(about.Description, want))
+        break;
+    }
+  }
+  check(D3D11CreateDevice(chosen.Get(), chosen ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
                           nullptr, 0, D3D11_SDK_VERSION, &device, nullptr,
                           &context));
   ComPtr<ID3D10Multithread> multi;
@@ -1442,6 +1454,9 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           initialCPU = cpuSeconds();
           firstFrames = frames;
           report << (directActive ? L"pipeline direct" : leanActive ? L"pipeline lean" : L"pipeline legacy") << std::endl;
+          DXGI_ADAPTER_DESC gpu{};
+          if (probeAdapter && SUCCEEDED(probeAdapter->GetDesc(&gpu)))
+            report << L"adapter " << gpu.Description << std::endl;
           leanLate = leanRebased = 0;
           leanWorstLate = 0;
         }
