@@ -72,12 +72,12 @@
 ## Screenshots
 
 <p align="center">
-  <img src="assets/readme/placeholder-library-list.png" alt="Library" width="820">
+  <img src="assets/readme/library.png" alt="Library" width="820">
   <br><sub>Library</sub>
 </p>
 
 <p align="center">
-  <img src="assets/readme/placeholder-library-grid.png" alt="Gallery view" width="820">
+  <img src="assets/readme/gallery.png" alt="Gallery view" width="820">
   <br><sub>Gallery view</sub>
 </p>
 
