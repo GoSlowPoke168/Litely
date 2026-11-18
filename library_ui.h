@@ -1,5 +1,6 @@
 ﻿#include <propkey.h>
 #include <mfreadwrite.h>
+#include <map>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -134,6 +135,15 @@ void drawCover(HDC dc,Gdiplus::Image *image,RECT r,float opacity=1){
   attributes.SetWrapMode(Gdiplus::WrapModeTileFlipXY);
   s.g.DrawImage(image,box,(iw-sw)/2,(ih-sh)/2,sw,sh,Gdiplus::UnitPixel,&attributes);
 }
+// Fonts are kept while the Library is open: recreating one each call made Windows rasterize every glyph on every frame.
+std::map<std::tuple<int,int,std::wstring>,HFONT> fontCache;
+HBITMAP shadeColumn=nullptr;int shadeTall=0;
+void freeDrawingCaches(){
+  for(auto &entry:fontCache)DeleteObject(entry.second);
+  fontCache.clear();
+  if(shadeColumn)DeleteObject(shadeColumn);
+  shadeColumn=nullptr;shadeTall=0;
+}
 int paintText(HDC dc, const std::wstring &text, RECT rect, int size,
                COLORREF color, int weight=FW_NORMAL, UINT flags=DT_LEFT|DT_TOP|DT_SINGLELINE,
                const wchar_t *family=nullptr) {
@@ -141,17 +151,39 @@ int paintText(HDC dc, const std::wstring &text, RECT rect, int size,
   DeviceDC deviceDc(dc);
   rect={px(rect.left),px(rect.top),px(rect.right),px(rect.bottom)};
   if(!family)family=size>=24?displayFace():textFace();
-  HFONT font =
-      CreateFont(-px(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                 DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, family);
+  HFONT &font=fontCache[{px(size),weight,family}];
+  if(!font)
+    font=CreateFont(-px(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, family);
   auto old = SelectObject(dc, font);
   SetTextColor(dc, color);
   SetBkMode(dc, TRANSPARENT);
   SIZE extent{};GetTextExtentPoint32(dc,text.c_str(),(int)text.size(),&extent);
   DrawText(dc,text.c_str(),-1,&rect,flags|DT_END_ELLIPSIS|DT_NOPREFIX);
   SelectObject(dc, old);
-  DeleteObject(font);
   return dip(extent.cx);
+}
+// The preview's bottom shade: one column, made once per height and stretched across, instead of a GDI+ gradient per frame.
+void shadePreview(HDC dc,RECT box){
+  int top=px(box.top),tall=px(box.bottom)-top;
+  if(tall<=0)return;
+  if(!shadeColumn || shadeTall!=tall){
+    if(shadeColumn)DeleteObject(shadeColumn);
+    BITMAPINFO info{{sizeof(BITMAPINFOHEADER),1,-tall,1,32,BI_RGB}};
+    void *bits=nullptr;
+    shadeColumn=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,&bits,nullptr,0);
+    if(!shadeColumn)return;
+    shadeTall=tall;
+    auto pixel=static_cast<UINT32*>(bits);
+    for(int y=0;y<tall;y++){
+      UINT32 a=225*(y+1)/(tall+2);
+      pixel[y]=a<<24|(16*a/255)|(9*a/255)<<8|(8*a/255)<<16;
+    }
+  }
+  HDC image=CreateCompatibleDC(dc);auto before=SelectObject(image,shadeColumn);
+  DeviceDC devicePixels(dc);
+  GdiAlphaBlend(dc,px(box.left),top,px(box.right)-px(box.left),tall,image,0,0,1,tall,{AC_SRC_OVER,0,255,AC_SRC_ALPHA});
+  SelectObject(image,before);DeleteDC(image);
 }
 void paintIcon(HDC dc,const wchar_t *glyph,RECT box,int size,COLORREF color){
   paintText(dc,glyph,box,size,color,FW_NORMAL,DT_CENTER|DT_VCENTER|DT_SINGLELINE,iconFace());
@@ -236,12 +268,15 @@ bool isPlaybackCopy(const fs::path &video){
   return !_wcsnicmp(video.c_str(),copies.c_str(),copies.size());
 }
 void menu(const POINT *anchor=nullptr);
+// Names are read from disk once, not on every frame; saving a name clears this.
+std::map<std::wstring,std::wstring> nameCache;
 std::wstring displayName(const fs::path &p){
+  auto known=nameCache.find(p.wstring());
+  if(known!=nameCache.end())return known->second;
   wchar_t custom[256]{};
   auto key=posterPath(p).stem().wstring();
   GetPrivateProfileString(L"names",key.c_str(),L"",custom,256,(folder/L"library-names.ini").c_str());
-  if(*custom)return custom;
-  return cleanName(p.stem().wstring());
+  return nameCache[p.wstring()]=*custom?std::wstring(custom):cleanName(p.stem().wstring());
 }
 fs::path thumbnailPath(const fs::path &video){
   auto path=posterPath(video);
@@ -824,11 +859,13 @@ fs::path importVideo(HWND owner,const wchar_t *initialDir){
   Gdiplus::GdiplusStartupInput input;ULONG_PTR token=0;
   bool drawing=Gdiplus::GdiplusStartup(&token,&input,nullptr)==Gdiplus::Ok;
   auto chosen=DialogBoxParam(instance,MAKEINTRESOURCE(300),owner,importProc,(LPARAM)&job);
+  if(!libraryWindow)freeDrawingCaches();
   if(drawing)Gdiplus::GdiplusShutdown(token);
   if(chosen!=1)return {};
   if(job.result!=job.original){
     auto key=posterPath(job.result).stem().wstring();
     WritePrivateProfileString(L"names",key.c_str(),displayName(job.original).c_str(),(folder/L"library-names.ini").c_str());
+    nameCache.clear();
   }
   return job.result;
 }
@@ -860,6 +897,7 @@ INT_PTR CALLBACK renameProc(HWND dialog,UINT message,WPARAM a,LPARAM b){
       int i=selectedIndex();
       if(i<0)return TRUE;
       auto key=posterPath(libraryFiles[i]).stem().wstring();
+      nameCache.clear();
       if(!WritePrivateProfileString(L"names",key.c_str(),value.c_str(),(folder/L"library-names.ini").c_str())){
         MessageBox(dialog,L"Could not save the name.",L"Litely",MB_ICONERROR);return TRUE;
       }
@@ -1038,13 +1076,21 @@ bool settingsMoving=false;
 constexpr int settingsTop=116,settingsBottom=914;
 int settingsLimit(int heightDip){return std::max(0,settingsBottom-heightDip);}
 void clipSettings(){
+  // Setting a region recalculates the window, so it only happens when the clip actually changes.
+  static SIZE clipped[7];static HWND clippedRow[7];
+  int k=0;
   for(int id:{103,104,105,111,112,113,114}){
     HWND row=GetDlgItem(libraryWindow,id);
     RECT box;GetWindowRect(row,&box);MapWindowPoints(nullptr,libraryWindow,(POINT*)&box,2);
     bool show=settingsPage && box.bottom>px(settingsTop);
     if(!!IsWindowVisible(row)!=show)ShowWindow(row,show?SW_SHOWNA:SW_HIDE);
     int cut=px(settingsTop)-box.top;
-    SetWindowRgn(row,show && cut>0?CreateRectRgn(0,cut,box.right-box.left,box.bottom-box.top):nullptr,FALSE);
+    SIZE want=show && cut>0?SIZE{cut,box.right-box.left}:SIZE{0,0};
+    if(row!=clippedRow[k] || want.cx!=clipped[k].cx || want.cy!=clipped[k].cy){
+      SetWindowRgn(row,want.cx?CreateRectRgn(0,cut,box.right-box.left,box.bottom-box.top):nullptr,FALSE);
+      clipped[k]=want;clippedRow[k]=row;
+    }
+    k++;
   }
 }
 void scrollSettings(double target){
@@ -1076,7 +1122,7 @@ void setUiPage(bool settings) {
   SendMessage(GetDlgItem(libraryWindow, 114), BM_SETCHECK, startsWithWindows() ? BST_CHECKED : BST_UNCHECKED, 0);
   for(int id:{103,104,105,106,111,112,113,114})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
   InvalidateRect(libraryWindow, nullptr, FALSE);
-  if(restore || !settings){RECT client;GetClientRect(libraryWindow,&client);SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));}
+  {RECT client;GetClientRect(libraryWindow,&client);SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));}
 }
 // The Library's own list: rows while narrow, tiles once wide, scrolled by pixels.
 HWND libraryScroll=nullptr,tileMenu=nullptr;
@@ -1321,6 +1367,27 @@ void warmCells(int panelWidth){
   }
   DeleteDC(cell);ReleaseDC(libraryScroll,dc);
 }
+// Test hook: with LITELY_TEST_LOG set, each live resize appends how long its layouts and paints took.
+bool liveResize=false,resizedLive=false;
+std::vector<double> resizeLayouts,resizePaints,resizeListPaints;
+struct ResizeTimer{
+  std::vector<double> *into;Clock::time_point began=Clock::now();
+  ~ResizeTimer(){if(into && liveResize)into->push_back(std::chrono::duration<double,std::milli>(Clock::now()-began).count());}
+};
+void logResize(){
+  wchar_t log[MAX_PATH];
+  if(GetEnvironmentVariableW(L"LITELY_TEST_LOG",log,MAX_PATH)){
+    std::wofstream out(log,std::ios::app);
+    out<<std::fixed<<std::setprecision(1)<<L"resize";
+    for(auto *list:{&resizeLayouts,&resizePaints,&resizeListPaints}){
+      auto v=*list;std::sort(v.begin(),v.end());
+      out<<L" | "<<(list==&resizeLayouts?L"layouts ":list==&resizePaints?L"paints ":L"list paints ")<<v.size();
+      if(!v.empty())out<<L" median "<<v[v.size()/2]<<L" ms p95 "<<v[v.size()*95/100]<<L" ms";
+    }
+    out<<std::endl;
+  }
+  resizeLayouts.clear();resizePaints.clear();resizeListPaints.clear();
+}
 LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
   switch(m){
   case WM_GETDLGCODE:return DLGC_WANTARROWS;
@@ -1328,6 +1395,7 @@ LRESULT CALLBACK scrollProc(HWND w,UINT m,WPARAM a,LPARAM b){
   case WM_SIZE:placeList();return 0;
   case WM_ERASEBKGND:return 1;
   case WM_PAINT:{
+    ResizeTimer timing{&resizeListPaints};
     // Each cell is drawn once into its own image; a frame is those images copied into one off-screen page.
     PAINTSTRUCT ps;HDC dc=BeginPaint(w,&ps);
     RECT r;GetClientRect(w,&r);
@@ -1536,8 +1604,10 @@ void stepSide(HWND w){
   if (t >= 1) {
     KillTimer(w, 5);
     timeEndPeriod(1);
-    sideAnimating = fastDraw = false;
-    releaseCanvases();
+    sideAnimating = false;
+    fastDraw = liveResize;
+    if (!liveResize)
+      releaseCanvases();
     previewOpacity = 1;
     if (sideTargetFull) {
       barFade = 0;
@@ -1736,14 +1806,31 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       SetTimer(w, 1, 1000, nullptr);
       return 0;
     }
+    // While the user drags an edge, paint the way the panel animation does, then once more at full quality.
+    case WM_ENTERSIZEMOVE:
+      liveResize=true;resizedLive=false;fastDraw=true;
+      return 0;
+    case WM_EXITSIZEMOVE:
+      liveResize=false;
+      logResize();
+      if(!sideAnimating && !splitDrag){
+        fastDraw=false;releaseCanvases();
+        if(resizedLive)RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+      }
+      return 0;
     case WM_SIZE: {
+      ResizeTimer timing{&resizeLayouts};
       if(a==SIZE_MINIMIZED)return 0;
+      resizedLive=resizedLive || liveResize;
       // A resize stream starves the animation's timer, so each resize also advances it.
       if(sideAnimating && !sideStepping){stepSide(w);return 0;}
       int cw=dip(LOWORD(b)),ch=dip(HIWORD(b));
       // One batched move without copying old pixels, so neighbours can't carry each other's stale bits.
       HDWP batch=BeginDeferWindowPos(10);
+      // Most controls keep their place while the width changes; moving them anyway costs milliseconds per resize.
       auto move=[&](HWND child,int x,int y,int span,int tall){
+        RECT now;GetWindowRect(child,&now);MapWindowPoints(nullptr,w,(POINT*)&now,2);
+        if(now.left==px(x) && now.top==px(y) && now.right-now.left==px(span) && now.bottom-now.top==px(std::max(0,tall)))return;
         if(batch)batch=DeferWindowPos(batch,child,nullptr,px(x),px(y),px(span),px(std::max(0,tall)),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS|SWP_NOREDRAW);
       };
       if(sideFull)sideWidth=cw-14;
@@ -1777,7 +1864,8 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       settingsOffset=std::clamp(settingsOffset,0.,(double)settingsLimit(ch));
       int scrolled=(int)std::lround(settingsOffset);
       const int rows[][2]={{103,206},{104,278},{105,406},{111,478},{112,614},{113,686},{114,822}};
-      for(auto &row:rows)move(GetDlgItem(w,row[0]),sideWidth+20,row[1]-scrolled,cw-sideWidth-48,68);
+      // Hidden Settings rows are placed when Settings opens, not on every resize.
+      if(settingsPage)for(auto &row:rows)move(GetDlgItem(w,row[0]),sideWidth+20,row[1]-scrolled,cw-sideWidth-48,68);
       if(batch)EndDeferWindowPos(batch);
       clipSettings();
       RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
@@ -2140,6 +2228,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
     case WM_ERASEBKGND:
       return 1;
     case WM_PAINT: {
+      ResizeTimer timing{&resizePaints};
       PAINTSTRUCT ps;
       HDC screen = BeginPaint(w, &ps);
       RECT r;
@@ -2227,9 +2316,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
             GdiAlphaBlend(dc,box.left,box.top,box.right-box.left,box.bottom-box.top,image,(int)(iw-sw)/2,(int)(ih-sh)/2,sw,sh,blend);
             SelectObject(image,before);DeleteDC(image);
           }else drawCover(dc,previewImage.get(),art,previewOpacity);
-          Smooth s(dc);auto box=frect({art.left,art.bottom-120,art.right,art.bottom});
-          Gdiplus::LinearGradientBrush shade(Gdiplus::PointF(0,box.Y-1),Gdiplus::PointF(0,box.GetBottom()+1),gdip(RGB(8,9,16),0),gdip(RGB(8,9,16),225));
-          s.g.FillRectangle(&shade,box);
+          shadePreview(dc,{art.left,art.bottom-120,art.right,art.bottom});
         }
         if(i<0)paintIcon(dc,L"",{art.left,art.top,art.right,art.bottom-70},40,mixColor(cWindow,cMuted,previewOpacity));
         roundCorners(dc,art,12,cWindow);
@@ -2302,6 +2389,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       sideAnimating = splitDrag = false;
       clearRowCache();
       scrollOffset = scrollTarget = 0;
+      freeDrawingCaches();
       Gdiplus::GdiplusShutdown(graphicsToken);
       trimMemory();
       return 0;
