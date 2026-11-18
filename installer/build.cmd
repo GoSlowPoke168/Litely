@@ -6,4 +6,4 @@ cd /d "%~dp0"
 set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC%" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 "%ISCC%" /Q %* litely.iss || exit /b 1
-powershell -NoProfile -Command "Compress-Archive -Force -Path ..\build\Litely.exe -DestinationPath ..\build\installer\Litely-portable.zip" || exit /b 1
+powershell -NoProfile -Command "Compress-Archive -Force -Path ..\build\Litely.exe,..\LICENSE -DestinationPath ..\build\installer\Litely-portable.zip" || exit /b 1

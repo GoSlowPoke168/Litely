@@ -8,6 +8,7 @@
   <a href="../../releases/latest"><img src="https://img.shields.io/badge/Download-latest-778DFC?style=for-the-badge&logo=github&logoColor=white" alt="Download"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-6CCCFC?style=for-the-badge" alt="Windows 10 | 11">
   <img src="https://img.shields.io/badge/Size-0.8%20MB-F9A47E?style=for-the-badge" alt="0.8 MB">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-A3E4A0?style=for-the-badge" alt="License: GPL-3.0"></a>
 </p>
 
 <p align="center">
@@ -209,5 +210,4 @@ See [How Litely works](docs/how-it-works.md) and [Testing](docs/testing.md).
 
 ## License
 
-<!-- Add a LICENSE file and a license badge. -->
-Not chosen yet.
+Litely is free software under the [GNU General Public License v3](LICENSE).

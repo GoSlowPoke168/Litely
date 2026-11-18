@@ -59,6 +59,7 @@ Name: samples; Description: "Include sample wallpapers ({#(SampleBytes + 524288)
 
 [Files]
 Source: "..\build\Litely.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 #if SampleBytes > 0
 Source: "{#SamplesDir}\*.mp4"; DestDir: "{app}\wallpapers"; Tasks: samples; Flags: ignoreversion
 #endif
