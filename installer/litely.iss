@@ -13,6 +13,20 @@
   #define DirName "Litely"
   #define SetupName "Litely-Setup"
 #endif
+; Sample wallpapers are whatever MP4s are in SamplesDir; with none, the option is left out.
+#ifndef SamplesDir
+  #define SamplesDir "..\build\wallpapers"
+#endif
+#define SampleBytes 0
+#define FindHandle
+#define FindResult
+#sub AddSample
+  #expr SampleBytes = SampleBytes + FileSize(SamplesDir + "\" + FindGetFileName(FindHandle))
+#endsub
+#for {FindHandle = FindResult = FindFirst(SamplesDir + "\*.mp4", 0); FindResult; FindResult = FindNext(FindHandle)} AddSample
+#if FindHandle
+  #expr FindClose(FindHandle)
+#endif
 
 [Setup]
 AppId={#AppId}
@@ -39,11 +53,15 @@ SolidCompression=yes
 
 [Tasks]
 Name: startup; Description: "Start Litely with Windows"
-Name: samples; Description: "Include sample wallpapers (18 MB)"
+#if SampleBytes > 0
+Name: samples; Description: "Include sample wallpapers ({#(SampleBytes + 524288) / 1048576} MB)"
+#endif
 
 [Files]
 Source: "..\build\Litely.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\build\wallpapers\*.mp4"; DestDir: "{app}\wallpapers"; Tasks: samples; Flags: ignoreversion
+#if SampleBytes > 0
+Source: "{#SamplesDir}\*.mp4"; DestDir: "{app}\wallpapers"; Tasks: samples; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\Litely.exe"
@@ -71,10 +89,16 @@ end;
 var
   TasksShown: Boolean;
 
+function GetWindowLong(Wnd: HWND; Index: Integer): Longint; external 'GetWindowLongW@user32.dll stdcall';
+function SetWindowLong(Wnd: HWND; Index: Integer; NewLong: Longint): Longint; external 'SetWindowLongW@user32.dll stdcall';
+
 // On an upgrade the startup box follows the current setting, which Litely's Settings may have changed.
 // Silent installs pass through this page too, so an explicit /TASKS wins.
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  // The task list blanks each box before redrawing it on hover; composited painting hides that blank frame.
+  if CurPageID = wpSelectTasks then
+    SetWindowLong(WizardForm.TasksList.Handle, -20, GetWindowLong(WizardForm.TasksList.Handle, -20) or $02000000);
   if (CurPageID = wpSelectTasks) and not TasksShown and (ExpandConstant('{param:TASKS|}') = '') then begin
     TasksShown := True;
     if (WizardForm.PrevAppDir <> '') and not RegValueExists(HKCU, '{#RunKey}', 'Litely') then
