@@ -82,8 +82,10 @@
 
 ## Install
 
-1. Download Litely from [Releases](../../releases/latest).
-2. Run it. The Litely icon appears in the system tray.
+1. Download **Litely-Setup.exe** from [Releases](../../releases/latest) and run it. It installs for your account only, so no administrator prompt.
+2. Keep **Start Litely with Windows** ticked so your wallpaper plays after every restart. The Litely icon appears in the system tray.
+
+Prefer no installer? **Litely-portable.zip** on the same page runs from any folder.
 
 > [!NOTE]
 > Litely isn't code-signed yet, so Windows may say "Windows protected your PC". Select **More info**, then **Run anyway**.
@@ -177,6 +179,13 @@ GIFs and MPEG streams (`.mpg`, `.ts`) always get a copy. If Windows has no decod
 </details>
 
 <details>
+<summary><b>Start with Windows</b></summary>
+
+**Settings > Startup > Start with Windows** opens Litely quietly in the tray when you sign in. The installer sets it for you; the portable copy can turn it on here.
+
+</details>
+
+<details>
 <summary><b>Accent colour</b></summary>
 
 **Settings > Appearance** sets the accent colour: **Match wallpaper** (default) takes it from the wallpaper on your desktop, or choose one of eight colours.
@@ -194,7 +203,7 @@ GIFs and MPEG streams (`.mpg`, `.ts`) always get a copy. If Windows has no decod
 
 ## Build from source
 
-Litely is written in C++17 against Win32, Direct3D 11 and Media Foundation. Run `build.cmd` with the Visual Studio C++ desktop tools and the Windows SDK installed. It produces `build\Litely.exe`.
+Litely is written in C++17 against Win32, Direct3D 11 and Media Foundation. Run `build.cmd` with the Visual Studio C++ desktop tools and the Windows SDK installed. It produces `build\Litely.exe`. `installer\build.cmd` also builds `Litely-Setup.exe` and `Litely-portable.zip` in `build\installer`, and needs [Inno Setup 6](https://jrsoftware.org/isinfo.php).
 
 See [How Litely works](docs/how-it-works.md) and [Testing](docs/testing.md).
 

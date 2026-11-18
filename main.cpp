@@ -1248,6 +1248,9 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
   int argc;
   auto argv = CommandLineToArgvW(GetCommandLine(), &argc);
   probe = argc == 4 && !wcscmp(argv[1], L"--probe");
+  // Started by Windows at sign-in: stay in the tray even without a wallpaper.
+  bool startup = argc == 2 && !wcscmp(argv[1], L"--startup");
+  bool opened = argc == 2 && !startup;
   // For tests: --convert source destination height cap(0|1) lowest(0|1); exits 0 when the copy was made, else the error.
   if (argc == 7 && !wcscmp(argv[1], L"--convert")) {
     Transcode copy;
@@ -1306,10 +1309,10 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
       maximumSavings = GetPrivateProfileIntW(L"wallpaper", L"maximumSavings", 0,
                                              file.c_str()) != 0;
       position = _wtof(time);
-      source = argc == 2 ? fs::path(argv[1]) : fs::path(path);
-      paused = argc != 2 &&
+      source = opened ? fs::path(argv[1]) : fs::path(path);
+      paused = !opened &&
                GetPrivateProfileInt(L"wallpaper", L"paused", 0, file.c_str());
-      if (argc == 2)
+      if (opened)
         position = 0;
       if (!source.empty()) {
         snapshot = posterPath(source);
@@ -1372,7 +1375,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
       visibility();
       if (paused)
         status(L"Litely - paused");
-      if (source.empty())
+      if (source.empty() && !startup)
         selectFile();
     }
     MSG m;

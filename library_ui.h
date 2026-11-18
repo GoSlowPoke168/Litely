@@ -1002,13 +1002,41 @@ void updateActionLabel(){
 }
 void applySide(int wanted,bool full);
 // The Settings page scrolls below the back button; rows passing under it are clipped, not drawn over it.
+// Test hook: LITELY_TEST_RUN_KEY points Start with Windows at another key, so tests leave the real one alone.
+std::wstring runKey(){
+  wchar_t key[260];
+  return GetEnvironmentVariableW(L"LITELY_TEST_RUN_KEY",key,260)?key:L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+}
+// Task Manager's Startup apps can switch the entry off without removing it; an odd first byte means off.
+const wchar_t *startupApproved=L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
+bool startsWithWindows(){
+  if(RegGetValueW(HKEY_CURRENT_USER,runKey().c_str(),L"Litely",RRF_RT_REG_SZ,nullptr,nullptr,nullptr))return false;
+  BYTE state[12]{};DWORD size=sizeof state;
+  return RegGetValueW(HKEY_CURRENT_USER,startupApproved,L"Litely",RRF_RT_REG_BINARY,nullptr,state,&size) || !(state[0]&1);
+}
+bool setStartWithWindows(bool on){
+  HKEY key;
+  if(RegCreateKeyExW(HKEY_CURRENT_USER,runKey().c_str(),0,nullptr,0,KEY_SET_VALUE,nullptr,&key,nullptr))return false;
+  LSTATUS result;
+  if(on){
+    wchar_t exe[32768];GetModuleFileName(nullptr,exe,32768);
+    std::wstring command=L"\""+std::wstring(exe)+L"\" --startup";
+    result=RegSetValueExW(key,L"Litely",0,REG_SZ,(const BYTE*)command.c_str(),DWORD((command.size()+1)*sizeof(wchar_t)));
+    if(!GetEnvironmentVariableW(L"LITELY_TEST_RUN_KEY",nullptr,0))RegDeleteKeyValueW(HKEY_CURRENT_USER,startupApproved,L"Litely");
+  }else{
+    result=RegDeleteValueW(key,L"Litely");
+    if(result==ERROR_FILE_NOT_FOUND)result=ERROR_SUCCESS;
+  }
+  RegCloseKey(key);
+  return result==ERROR_SUCCESS;
+}
 double settingsOffset=0,settingsTarget=0;
 Clock::time_point settingsTick;
 bool settingsMoving=false;
-constexpr int settingsTop=116,settingsBottom=778;
+constexpr int settingsTop=116,settingsBottom=914;
 int settingsLimit(int heightDip){return std::max(0,settingsBottom-heightDip);}
 void clipSettings(){
-  for(int id:{103,104,105,111,112,113}){
+  for(int id:{103,104,105,111,112,113,114}){
     HWND row=GetDlgItem(libraryWindow,id);
     RECT box;GetWindowRect(row,&box);MapWindowPoints(nullptr,libraryWindow,(POINT*)&box,2);
     bool show=settingsPage && box.bottom>px(settingsTop);
@@ -1031,7 +1059,7 @@ void setUiPage(bool settings) {
   ShowWindow(GetDlgItem(libraryWindow, 102), !settings && (!mainOff || sideFull) ? SW_SHOW : SW_HIDE);
   ShowWindow(GetDlgItem(libraryWindow, 109), !settings && !mainOff ? SW_SHOW : SW_HIDE);
   if(settings)settingsOffset=settingsTarget=0;
-  for (int id : {103, 104, 105, 107, 111, 112, 113})
+  for (int id : {103, 104, 105, 107, 111, 112, 113, 114})
     ShowWindow(GetDlgItem(libraryWindow, id), settings ? SW_SHOW : SW_HIDE);
   SendMessage(GetDlgItem(libraryWindow, 103), BM_SETCHECK,
               maximumSavings ? BST_UNCHECKED : BST_CHECKED, 0);
@@ -1043,7 +1071,8 @@ void setUiPage(bool settings) {
               batteryFps ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessage(GetDlgItem(libraryWindow, 112), BM_SETCHECK, accentMode ? BST_UNCHECKED : BST_CHECKED, 0);
   SendMessage(GetDlgItem(libraryWindow, 113), BM_SETCHECK, accentMode ? BST_CHECKED : BST_UNCHECKED, 0);
-  for(int id:{103,104,105,106,111,112,113})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
+  SendMessage(GetDlgItem(libraryWindow, 114), BM_SETCHECK, startsWithWindows() ? BST_CHECKED : BST_UNCHECKED, 0);
+  for(int id:{103,104,105,106,111,112,113,114})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
   InvalidateRect(libraryWindow, nullptr, FALSE);
   if(restore){RECT client;GetClientRect(libraryWindow,&client);SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));}
 }
@@ -1617,6 +1646,7 @@ const wchar_t *choiceDescription(int id){
     return text.c_str();
   }
   if(id==113)return L"";
+  if(id==114)return L"Opens Litely in the tray when you sign in, so your wallpaper plays right away.";
   if(id==111)return batteryCopyFailed?L"Couldn't make the 30 fps copy of this video.":
                                       L"On battery, plays a 30 fps copy of wallpapers above 30 fps. The copy is made once, in the background.";
   return id==103?L"Resumes instantly when the desktop is uncovered. Keeps video memory reserved.":
@@ -1660,6 +1690,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       control(L"BUTTON", L"30 fps on battery", BS_AUTOCHECKBOX, 111);
       control(L"BUTTON", L"Match wallpaper", BS_AUTORADIOBUTTON | WS_GROUP, 112);
       control(L"BUTTON", L"Choose a colour", BS_AUTORADIOBUTTON, 113);
+      control(L"BUTTON", L"Start with Windows", BS_AUTOCHECKBOX | WS_GROUP, 114);
       control(L"BUTTON", L"Remove", BS_OWNERDRAW, 109);
       control(L"BUTTON", L"Settings", BS_OWNERDRAW, 106);
       control(L"BUTTON", L"Tray menu", BS_OWNERDRAW, 108);
@@ -1693,7 +1724,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       settingsTarget=std::clamp(settingsTarget,0.,(double)settingsLimit(ch));
       settingsOffset=std::clamp(settingsOffset,0.,(double)settingsLimit(ch));
       int scrolled=(int)std::lround(settingsOffset);
-      const int rows[][2]={{103,206},{104,278},{105,406},{111,478},{112,614},{113,686}};
+      const int rows[][2]={{103,206},{104,278},{105,406},{111,478},{112,614},{113,686},{114,822}};
       for(auto &row:rows)move(GetDlgItem(w,row[0]),sideWidth+20,row[1]-scrolled,cw-sideWidth-48,68);
       if(batch)EndDeferWindowPos(batch);
       clipSettings();
@@ -1987,6 +2018,15 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         refreshSettings();
         return 0;
       }
+      if (id == 114) {
+        bool on = SendMessage(GetDlgItem(w, 114), BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (!setStartWithWindows(on)) {
+          SendMessage(GetDlgItem(w, 114), BM_SETCHECK, on ? BST_UNCHECKED : BST_CHECKED, 0);
+          MessageBox(w, L"Windows didn't allow Litely to change its startup setting.", L"Litely", MB_ICONERROR);
+        }
+        InvalidateRect(GetDlgItem(w, 114), nullptr, FALSE);
+        return 0;
+      }
       if (id == 105) {
         batteryRule =
             SendMessage(GetDlgItem(w, 105), BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -2001,7 +2041,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
     }
     case WM_NOTIFY: {
       auto header=reinterpret_cast<NMHDR*>(b);
-      if(header->code!=NM_CUSTOMDRAW || (header->idFrom<111 || header->idFrom>113) && (header->idFrom<103 || header->idFrom>105))break;
+      if(header->code!=NM_CUSTOMDRAW || (header->idFrom<111 || header->idFrom>114) && (header->idFrom<103 || header->idFrom>105))break;
       auto &draw=*reinterpret_cast<NMCUSTOMDRAW*>(b);
       if(draw.dwDrawStage!=CDDS_PREPAINT)return CDRF_DODEFAULT;
       RECT bounds;GetClientRect(header->hwndFrom,&bounds);
@@ -2010,7 +2050,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       wchar_t label[128];GetWindowText(header->hwndFrom,label,128);
       int id=(int)header->idFrom;
       drawChoice(dc,units(bounds),label,choiceDescription(id),SendMessage(header->hwndFrom,BM_GETCHECK,0,0)==BST_CHECKED,
-                 id==105 || id==111,true,hovered(header->hwndFrom),(draw.uItemState&CDIS_FOCUS) && keyboardCues(header->hwndFrom),cWindow);
+                 id==105 || id==111 || id==114,true,hovered(header->hwndFrom),(draw.uItemState&CDIS_FOCUS) && keyboardCues(header->hwndFrom),cWindow);
       if(id==113)drawSwatches(dc,units(bounds));
       BitBlt(draw.hdc,0,0,bounds.right,bounds.bottom,dc,0,0,SRCCOPY);
       SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
@@ -2120,10 +2160,11 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         paintText(dc,L"Settings",{left,118-o,right,158-o},28,cText,FW_SEMIBOLD);
         paintText(dc,L"Performance",{left,176-o,right,198-o},15,cText,FW_SEMIBOLD);
         paintText(dc,playbackPath.empty()?L"Playback starts with the next wallpaper":playbackPath,{left+120,178-o,right,198-o},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
-        {UiDC mapping(dc);panel(dc,{left,358-o,right,359-o},cLine);panel(dc,{left,566-o,right,567-o},cLine);}
+        {UiDC mapping(dc);panel(dc,{left,358-o,right,359-o},cLine);panel(dc,{left,566-o,right,567-o},cLine);panel(dc,{left,774-o,right,775-o},cLine);}
         paintText(dc,L"Battery",{left,376-o,right,398-o},15,cText,FW_SEMIBOLD);
         paintText(dc,L"Appearance",{left,584-o,right,606-o},15,cText,FW_SEMIBOLD);
         paintText(dc,L"Accent colour for buttons, highlights and selection",{left+120,586-o,right,606-o},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
+        paintText(dc,L"Startup",{left,792-o,right,814-o},15,cText,FW_SEMIBOLD);
         RestoreDC(dc,saved);
         if(int limit=settingsLimit(r.bottom)){
           int view=r.bottom-settingsTop,tall=std::max(28,view*view/(view+limit)),top=settingsTop+(int)((view-tall)*settingsOffset/limit);
