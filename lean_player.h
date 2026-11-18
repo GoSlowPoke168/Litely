@@ -47,6 +47,49 @@ void leanOutputType(IMFTransform *decoder, ComPtr<IMFMediaType> &type) {
   }
   check(decoder->SetOutputType(0, type.Get(), 0));
 }
+// Windows states 30.00003 fps for every MKV and WebM, so there the span of the first frames' timestamps decides.
+// Other containers can split frames across samples, so their stated rate stands.
+void readRate(IMFSourceReader *reader, IMFMediaType *native, const fs::path &file, UINT32 &num, UINT32 &den) {
+  bool stated = SUCCEEDED(MFGetAttributeRatio(native, MF_MT_FRAME_RATE, &num, &den)) && num && den;
+  bool matroska = !_wcsicmp(file.extension().c_str(), L".mkv") || !_wcsicmp(file.extension().c_str(), L".webm");
+  if (stated && !matroska)
+    return;
+  if (!stated)
+    num = 30, den = 1;
+  std::vector<LONGLONG> times;
+  for (int i = 0; i < 120; i++) {
+    DWORD flags = 0;
+    LONGLONG time = 0;
+    ComPtr<IMFSample> sample;
+    if (FAILED(reader->ReadSample(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, nullptr, &flags, &time, &sample)) ||
+        (flags & (MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READERF_ERROR)))
+      break;
+    if (sample)
+      times.push_back(time);
+  }
+  PROPVARIANT start;
+  PropVariantInit(&start);
+  start.vt = VT_I8;
+  reader->SetCurrentPosition(GUID_NULL, start);
+  PropVariantClear(&start);
+  std::sort(times.begin(), times.end());
+  // Frames still to come in decode order leave gaps among the latest times.
+  if (times.size() > 16)
+    times.resize(times.size() - 8);
+  if (times.size() < 2 || times.back() <= times.front())
+    return;
+  double fps = 1e7 * (times.size() - 1) / double(times.back() - times.front());
+  for (double standard : {24000 / 1001., 30000 / 1001., 60000 / 1001.})
+    if (std::abs(fps - standard) < standard * .0003) {
+      num = UINT32(standard * 1001 + .5), den = 1001;
+      return;
+    }
+  if (std::abs(fps - std::round(fps)) < fps * .005)
+    num = UINT32(std::round(fps)), den = 1;
+  else
+    num = UINT32(fps * 1000 + .5), den = 1000;
+}
+
 // The demuxer loops by seeking; the decoder is never flushed, so the loop has no gap.
 void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceManager> devices) {
   HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -64,10 +107,7 @@ void leanDecode(fs::path file, double start, unsigned id, ComPtr<IMFDXGIDeviceMa
     check(reader->GetNativeMediaType(video, 0, &native));
     UINT w = 0, h = 0, num = 0, den = 0;
     check(MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h));
-    if (FAILED(MFGetAttributeRatio(native.Get(), MF_MT_FRAME_RATE, &num, &den)) || !num || !den) {
-      num = 60;
-      den = 1;
-    }
+    readRate(reader.Get(), native.Get(), file, num, den);
     MFT_REGISTER_TYPE_INFO input{MFMediaType_Video, {}};
     check(native->GetGUID(MF_MT_SUBTYPE, &input.guidSubtype));
     IMFActivate **found = nullptr;

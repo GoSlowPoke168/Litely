@@ -14,9 +14,10 @@ struct Transcode {
   std::atomic<bool> cancel{false};
   std::atomic<int> percent{-1};
   HANDLE thread = nullptr;
-  // Set by the worker: why it failed, and the source's video format when Windows recognised one.
+  // Set by the worker: why it failed, the source's video format when Windows recognised one, and whether any frame was read.
   HRESULT error = S_OK;
   GUID codec = GUID_NULL;
+  bool decoded = false;
 };
 
 bool isGif(const fs::path &file) { return !_wcsicmp(file.extension().c_str(), L".gif"); }
@@ -52,49 +53,6 @@ struct TranscodeSource {
   std::function<HRESULT(UINT32 ow, UINT32 oh)> prepare;
   std::function<HRESULT(UINT32 ow, UINT32 oh, ComPtr<IMFMediaBuffer> &frame, LONGLONG &time, LONGLONG &span)> next;
 };
-
-// Windows states 30.00003 fps for every MKV and WebM, so there the span of the first frames' timestamps decides.
-// Other containers can split frames across samples, so their stated rate stands.
-void readRate(IMFSourceReader *reader, IMFMediaType *native, const fs::path &file, UINT32 &num, UINT32 &den) {
-  bool stated = SUCCEEDED(MFGetAttributeRatio(native, MF_MT_FRAME_RATE, &num, &den)) && num && den;
-  bool matroska = !_wcsicmp(file.extension().c_str(), L".mkv") || !_wcsicmp(file.extension().c_str(), L".webm");
-  if (stated && !matroska)
-    return;
-  if (!stated)
-    num = 30, den = 1;
-  std::vector<LONGLONG> times;
-  for (int i = 0; i < 120; i++) {
-    DWORD flags = 0;
-    LONGLONG time = 0;
-    ComPtr<IMFSample> sample;
-    if (FAILED(reader->ReadSample(transcodeVideo, 0, nullptr, &flags, &time, &sample)) ||
-        (flags & (MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READERF_ERROR)))
-      break;
-    if (sample)
-      times.push_back(time);
-  }
-  PROPVARIANT start;
-  PropVariantInit(&start);
-  start.vt = VT_I8;
-  reader->SetCurrentPosition(GUID_NULL, start);
-  PropVariantClear(&start);
-  std::sort(times.begin(), times.end());
-  // Frames still to come in decode order leave gaps among the latest times.
-  if (times.size() > 16)
-    times.resize(times.size() - 8);
-  if (times.size() < 2 || times.back() <= times.front())
-    return;
-  double fps = 1e7 * (times.size() - 1) / double(times.back() - times.front());
-  for (double standard : {24000 / 1001., 30000 / 1001., 60000 / 1001.})
-    if (std::abs(fps - standard) < standard * .0003) {
-      num = UINT32(standard * 1001 + .5), den = 1001;
-      return;
-    }
-  if (std::abs(fps - std::round(fps)) < fps * .005)
-    num = UINT32(std::round(fps)), den = 1;
-  else
-    num = UINT32(fps * 1000 + .5), den = 1000;
-}
 
 HRESULT openVideo(Transcode &t, TranscodeSource &s) {
   ComPtr<IMFAttributes> readerSettings;
@@ -463,6 +421,7 @@ HRESULT transcodeRun(Transcode &t, const fs::path &temp) {
     TRANSCODE_CHECK(s.next(ow, oh, frame, time, span));
     if (!frame)
       break;
+    t.decoded = true;
     // 1 ms of slack absorbs rounding in source timestamps.
     TRANSCODE_CHECK(emit(time - 10000));
     held = frame;

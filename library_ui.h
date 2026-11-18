@@ -609,8 +609,13 @@ void paintImport(HWND w,HDC dc){
       auto &row=rows[k];int y=336+k*38;
       paintText(dc,row.label,{40,y,240,y+18},13,cSoft);
       bool approx=*row.unit!=0;
-      swprintf_s(text,approx?L"≈%.0f%s  →  ≈%.0f%s":L"%.0f%s  →  %.0f%s",row.from,row.unit,row.to,row.unit);
-      if(row.to==row.from)swprintf_s(text,approx?L"≈%.0f%s":L"%.0f%s",row.from,row.unit);
+      // Frame rates keep their decimals (12.5, 29.97); memory estimates are whole MiB.
+      auto number=[&](double v){
+        wchar_t n[32];double r=std::round(v*100)/100;
+        swprintf_s(n,approx || r==std::round(r)?L"%.0f":std::abs(r*10-std::round(r*10))<1e-6?L"%.1f":L"%.2f",r);
+        return (approx?L"≈":L"")+std::wstring(n)+row.unit;
+      };
+      wcscpy_s(text,(row.to==row.from?number(row.from):number(row.from)+L"  →  "+number(row.to)).c_str());
       paintText(dc,text,{200,y,360,y+18},13,cText,FW_NORMAL,DT_RIGHT|DT_SINGLELINE);
       double ratio=row.from>0?row.to/row.from:1;
       if(ratio<.995)swprintf_s(text,L"−%.0f%%",(1-ratio)*100);else wcscpy_s(text,L"Same");
@@ -728,6 +733,7 @@ void finishBatteryCopy(){
   else updatePlayFile();
   refreshSettings();
 }
+const wchar_t *unreadableVideo=L"Windows couldn't read this video. The file may be incomplete or damaged, such as an unfinished download.";
 // Names the missing Store extension when Windows recognised the video's format but has no decoder for it.
 std::wstring conversionError(const Transcode &copy){
   std::wstring unchanged=L" Your original file is unchanged.";
@@ -743,6 +749,8 @@ std::wstring conversionError(const Transcode &copy){
                L" from the Microsoft Store, then add the video again."+unchanged;
     return L"Windows doesn't have a decoder for this video's format, so Litely can't convert it."+unchanged;
   }
+  // A cut-off file fails with varying errors, but always before a single frame is read.
+  if(!copy.decoded)return unreadableVideo+unchanged;
   return L"Litely couldn't convert this video."+unchanged;
 }
 INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
@@ -822,7 +830,12 @@ INT_PTR CALLBACK importProc(HWND w,UINT msg,WPARAM a,LPARAM b){
   if(msg!=WM_COMMAND || LOWORD(a)!=IDOK || job->copy)return FALSE;
   bool cap=IsDlgButtonChecked(w,306)!=0;
   int limit=chosenLimit(w);
-  if(!convertChoice(w) && !needsCopy(job->original)){job->result=job->original;EndDialog(w,1);return TRUE;}
+  if(!convertChoice(w) && !needsCopy(job->original)){
+    // Kept as-is, a file Windows can't open would only fail later as a wallpaper.
+    DWORD wide=0,tall=0,rate=0;ULONGLONG length=0;
+    if(!videoFacts(job->original,wide,tall,rate,length)){MessageBox(w,unreadableVideo,L"Litely",MB_ICONERROR);return TRUE;}
+    job->result=job->original;EndDialog(w,1);return TRUE;
+  }
   std::wstring size=std::to_wstring(limit),suffix=limit?size+L"p":L"original";
   bool lowest=IsDlgButtonChecked(w,308)!=0;
   if(cap)suffix+=L"-30fps";
