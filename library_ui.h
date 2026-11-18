@@ -165,6 +165,8 @@ int hoveredRow = -1, selectedRow = -1;
 // The Library panel's width in layout units; it can be dragged wider or fill the window.
 int sideWidth = 236, sideLast = 236;
 bool sideFull = false, mainOff = false;
+// The Library filled the window because the preview stopped fitting, not because the user chose it.
+bool autoFull = false;
 bool gridMode() { return sideWidth >= 400; }
 int heroBottom(int widthDip, int heightDip) {
   return std::min(heightDip - 212, 92 + MulDiv(widthDip - sideWidth - 56, 100, 197));
@@ -1053,7 +1055,7 @@ void scrollSettings(double target){
 }
 void setUiPage(bool settings) {
   bool restore=settings && sideFull;
-  if(restore){sideFull=mainOff=false;sideWidth=sideLast;}
+  if(restore){sideFull=mainOff=autoFull=false;sideWidth=sideLast;}
   settingsPage = settings;
   titleHot = false;
   ShowWindow(GetDlgItem(libraryWindow, 102), !settings && (!mainOff || sideFull) ? SW_SHOW : SW_HIDE);
@@ -1074,7 +1076,7 @@ void setUiPage(bool settings) {
   SendMessage(GetDlgItem(libraryWindow, 114), BM_SETCHECK, startsWithWindows() ? BST_CHECKED : BST_UNCHECKED, 0);
   for(int id:{103,104,105,106,111,112,113,114})InvalidateRect(GetDlgItem(libraryWindow,id),nullptr,FALSE);
   InvalidateRect(libraryWindow, nullptr, FALSE);
-  if(restore){RECT client;GetClientRect(libraryWindow,&client);SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));}
+  if(restore || !settings){RECT client;GetClientRect(libraryWindow,&client);SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));}
 }
 // The Library's own list: rows while narrow, tiles once wide, scrolled by pixels.
 HWND libraryScroll=nullptr,tileMenu=nullptr;
@@ -1507,7 +1509,7 @@ void applySide(int wanted,bool full){
 void saveSide(){
   auto file=(folder/L"settings.ini").wstring();
   WritePrivateProfileStringW(L"wallpaper",L"libraryWidth",std::to_wstring(sideLast).c_str(),file.c_str());
-  WritePrivateProfileStringW(L"wallpaper",L"libraryFull",sideFull?L"1":L"0",file.c_str());
+  WritePrivateProfileStringW(L"wallpaper",L"libraryFull",sideFull && !autoFull?L"1":L"0",file.c_str());
 }
 // While the panel moves, the preview may shrink from its 500-unit minimum to 330, fading out over that band.
 float previewRoom(int panelWidth){
@@ -1523,10 +1525,45 @@ void animateSide(int to,bool full){
   sideStart=Clock::now();sideAnimating=true;
   SetTimer(libraryWindow,5,1,nullptr);
 }
+// One frame of the panel animation, placed by elapsed time.
+bool sideStepping=false;
+void stepSide(HWND w){
+  sideStepping=true;
+  sideFrames.push_back(Clock::now());
+  double t = std::min(1., std::chrono::duration<double, std::milli>(Clock::now() - sideStart).count() / 300);
+  // Ease in and out, so the panel starts and settles gently instead of jumping on the first frame.
+  double eased = t < .5 ? 4 * t * t * t : 1 - std::pow(-2 * t + 2, 3) / 2;
+  if (t >= 1) {
+    KillTimer(w, 5);
+    timeEndPeriod(1);
+    sideAnimating = fastDraw = false;
+    releaseCanvases();
+    previewOpacity = 1;
+    if (sideTargetFull) {
+      barFade = 0;
+      barStart = Clock::now();
+      SetTimer(w, 7, 1, nullptr);
+    }
+    applySide((int)sideTo, sideTargetFull);
+    saveSide();
+    logSideFrames();
+  } else {
+    // Growing to full follows the window edge, which may still be moving while the user resizes.
+    RECT now;GetClientRect(w, &now);
+    double target = sideTargetFull ? dip(now.right) - 14 : sideTo;
+    int next = (int)std::lround(sideFrom + (target - sideFrom) * eased);
+    previewOpacity = previewRoom(next);
+    applySide(next, false);
+  }
+  sideStepping=false;
+}
 void toggleSide(){
   if(settingsPage)setUiPage(false);
   RECT client;GetClientRect(libraryWindow,&client);
+  // Collapsing where the preview can't fit would only bounce back.
+  if(sideFull && dip(client.right)-236<486)return;
   if(!sideFull)sideLast=sideWidth;
+  autoFull=false;
   animateSide(sideFull?sideLast:dip(client.right)-14,!sideFull);
 }
 // Keep the native button's input, radio grouping and accessibility behavior.
@@ -1701,6 +1738,8 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
     }
     case WM_SIZE: {
       if(a==SIZE_MINIMIZED)return 0;
+      // A resize stream starves the animation's timer, so each resize also advances it.
+      if(sideAnimating && !sideStepping){stepSide(w);return 0;}
       int cw=dip(LOWORD(b)),ch=dip(HIWORD(b));
       // One batched move without copying old pixels, so neighbours can't carry each other's stale bits.
       HDWP batch=BeginDeferWindowPos(10);
@@ -1710,6 +1749,19 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       if(sideFull)sideWidth=cw-14;
       else if(!sideAnimating && !splitDrag)sideWidth=std::clamp(sideWidth,236,std::max(236,cw-500));
       mainOff=sideFull || cw-sideWidth<(sideAnimating || splitDrag?330:486);
+      // Too narrow for the preview: the Library glides over it, and hands it back once there is room again.
+      if(!sideAnimating && !splitDrag && !settingsPage){
+        bool shown=IsWindowVisible(w)!=0;
+        if(!sideFull && cw-sideWidth<486){
+          sideLast=sideWidth;autoFull=true;
+          if(shown)animateSide(cw-14,true);
+          else{sideFull=mainOff=true;sideWidth=cw-14;}
+        }else if(sideFull && autoFull && cw-236>=510){
+          autoFull=false;
+          if(shown)animateSide(std::min(sideLast,cw-500),false);
+          else{sideFull=mainOff=false;sideWidth=std::min(sideLast,cw-500);}
+        }
+      }
       bool grid=gridMode();
       int hero=heroBottom(cw,ch);
       move(libraryScroll,12,122,sideWidth-24,grid?ch-186:ch-226);
@@ -1774,30 +1826,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         return 0;
       }
       if (a == 5) {
-        sideFrames.push_back(Clock::now());
-        double t = std::min(1., std::chrono::duration<double, std::milli>(Clock::now() - sideStart).count() / 300);
-        // Ease in and out, so the panel starts and settles gently instead of jumping on the first frame.
-        double eased = t < .5 ? 4 * t * t * t : 1 - std::pow(-2 * t + 2, 3) / 2;
-        if (t >= 1) {
-          KillTimer(w, 5);
-          timeEndPeriod(1);
-          sideAnimating = fastDraw = false;
-          releaseCanvases();
-          previewOpacity = 1;
-          if (sideTargetFull) {
-            barFade = 0;
-            barStart = Clock::now();
-            SetTimer(w, 7, 1, nullptr);
-          }
-          applySide((int)sideTo, sideTargetFull);
-          saveSide();
-          logSideFrames();
-        } else
-        {
-          int next = (int)std::lround(sideFrom + (sideTo - sideFrom) * eased);
-          previewOpacity = previewRoom(next);
-          applySide(next, false);
-        }
+        stepSide(w);
         UpdateWindow(w);
         // Wait for the compositor, so each frame lands on a screen refresh.
         DwmFlush();
@@ -1902,6 +1931,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       POINT click{dip(GET_X_LPARAM(b)),dip(GET_Y_LPARAM(b))};
       if(splitDrag){
         bool moved=splitMoved;
+        autoFull=false;
         ReleaseCapture();
         RECT client;GetClientRect(w,&client);int cw=dip(client.right);
         if(!moved)toggleSide();
@@ -2153,7 +2183,6 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           int used=paintText(dc,state,{262,y,edge,y+36},13,mixColor(cWindow,cSoft,barFade),FW_NORMAL,DT_VCENTER|DT_SINGLELINE);
           paintText(dc,displayName(source),{262+used+8,y,edge,y+36},13,playing?mixColor(cWindow,cAccent,barFade):cMuted,FW_SEMIBOLD,DT_VCENTER|DT_SINGLELINE);
         }
-      }else if(mainOff){
       }else if(settingsPage){
         int o=(int)std::lround(settingsOffset),saved=SaveDC(dc);
         IntersectClipRect(dc,0,px(settingsTop),pixels.right,pixels.bottom);
@@ -2170,6 +2199,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           int view=r.bottom-settingsTop,tall=std::max(28,view*view/(view+limit)),top=settingsTop+(int)((view-tall)*settingsOffset/limit);
           fillRound(dc,{r.right-10,top+2,r.right-6,top+tall-2},cLine,2);
         }
+      }else if(mainOff){
       }else{
         int i=selectedIndex();
         int hero=heroBottom(r.right,r.bottom);
