@@ -1,5 +1,5 @@
 ; Per-user installer for Litely. Built by installer\build.cmd; /DTest makes a separately named copy for tests.
-#define AppVersion "0.1.0"
+#define AppVersion GetFileProductVersion("..\build\Litely.exe")
 #ifdef Test
   #define AppName "Litely Test"
   #define AppId "{{470EFAE4-E20A-445D-B472-66D25FC555AF}"
@@ -94,20 +94,69 @@ begin
     RegDeleteValue(HKCU, '{#RunKey}', 'Litely');
 end;
 
+// One question with a box for the data, in place of Inno's plain Yes/No. The answer reruns the uninstaller
+// quietly, because the built-in confirmation can't be replaced otherwise.
 function InitializeUninstall(): Boolean;
+var
+  Form: TSetupForm;
+  Question: TNewStaticText;
+  Data: TNewCheckBox;
+  Remove, Keep: TNewButton;
+  Code: Integer;
 begin
-  CloseLitely;
   Result := True;
+  if UninstallSilent then begin
+    CloseLitely;
+    Exit;
+  end;
+  Result := False;
+  Form := CreateCustomForm(400, 124, False, True);
+  try
+    Form.Caption := 'Uninstall {#AppName}';
+    Question := TNewStaticText.Create(Form);
+    Question.Parent := Form;
+    Question.Left := ScaleX(16);
+    Question.Top := ScaleY(16);
+    Question.Caption := 'Remove {#AppName} from this PC?';
+    Data := TNewCheckBox.Create(Form);
+    Data.Parent := Form;
+    Data.Left := ScaleX(16);
+    Data.Top := ScaleY(44);
+    Data.Width := Form.ClientWidth - ScaleX(32);
+    Data.Height := ScaleY(17);
+    Data.Caption := 'Also delete my Library, settings and converted wallpapers';
+    Remove := TNewButton.Create(Form);
+    Remove.Parent := Form;
+    Remove.Caption := 'Uninstall';
+    Remove.ModalResult := mrOk;
+    Remove.Default := True;
+    Keep := TNewButton.Create(Form);
+    Keep.Parent := Form;
+    Keep.Caption := 'Cancel';
+    Keep.ModalResult := mrCancel;
+    Keep.Cancel := True;
+    Remove.Width := Form.CalculateButtonWidth([Remove.Caption, Keep.Caption]);
+    Keep.Width := Remove.Width;
+    Remove.Height := ScaleY(23);
+    Keep.Height := ScaleY(23);
+    Keep.Left := Form.ClientWidth - Keep.Width - ScaleX(12);
+    Remove.Left := Keep.Left - Remove.Width - ScaleX(6);
+    Remove.Top := Form.ClientHeight - ScaleY(23 + 12);
+    Keep.Top := Remove.Top;
+    Form.ActiveControl := Keep;
+    if Form.ShowModal() = mrOk then
+      Exec(ExpandConstant('{uninstallexe}'), '/SILENT /DELETEDATA=' + IntToStr(Ord(Data.Checked)), '', SW_SHOW, ewNoWait, Code);
+  finally
+    Form.Free();
+  end;
 end;
 
-// Litely keeps its data where LOCALAPPDATA points, as Litely itself does. Silent uninstalls keep it unless /DELETEDATA=1.
+// Litely keeps its data where LOCALAPPDATA points, as Litely itself does; /DELETEDATA=1 removes it.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Data: String;
 begin
   Data := GetEnv('LOCALAPPDATA') + '\Litely';
-  if (CurUninstallStep = usPostUninstall) and DirExists(Data) then
-    if (ExpandConstant('{param:DELETEDATA|0}') = '1') or
-       (not UninstallSilent and (MsgBox('Also delete your Litely Library, settings and converted copies?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES)) then
-      DelTree(Data, True, True, True);
+  if (CurUninstallStep = usPostUninstall) and DirExists(Data) and (ExpandConstant('{param:DELETEDATA|0}') = '1') then
+    DelTree(Data, True, True, True);
 end;
