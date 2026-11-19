@@ -60,7 +60,7 @@
   <tr>
     <td valign="top">
       <h3>A Library for your wallpapers</h3>
-      Keep them in a list or a gallery and switch with one click. The accent colour follows your wallpaper.
+      Keep them in a list or a gallery and switch with one click. Live CPU, RAM and video memory readings show what the wallpaper costs. The accent colour follows your wallpaper.
     </td>
     <td valign="top">
       <h3>Pause on any frame</h3>
@@ -98,7 +98,7 @@ Prefer no installer? **Litely-portable.zip** on the same page runs from any fold
 1. Click the tray icon and choose **Open Litely**.
 2. Select **Add video** and pick a video or GIF. Litely makes a Lowest memory copy by default; you can keep the original instead.
 3. Click the video in the Library to put it on your desktop.
-4. Right-click the tray icon to pause on the current frame, change the performance mode or exit.
+4. Right-click the tray icon to see what the wallpaper is using, pause on the current frame, change the performance mode or exit.
 
 ## Litely vs Lively Wallpaper
 
@@ -175,7 +175,7 @@ GIFs and MPEG streams (`.mpg`, `.ts`) always get a copy. If Windows has no decod
 <details>
 <summary><b>30 fps on battery</b></summary>
 
-**Settings > 30 fps on battery** (off by default) makes a 30 fps copy of the active wallpaper once, in the background, and plays it while on battery.
+**Settings > 30 fps on battery** (off by default) makes a 30 fps copy of the active wallpaper once, in the background, and plays it while on battery. Litely uses about 30 MiB more RAM while it makes the copy.
 
 </details>
 
@@ -198,6 +198,8 @@ GIFs and MPEG streams (`.mpg`, `.ts`) always get a copy. If Windows has no decod
 
 - Choosing a video also sets a still from it as the Windows wallpaper, which Windows shows while the player starts.
 - Litely keeps its stills out of **Settings > Personalization > Background > Recent images**.
+- The still is set on every virtual desktop, so switching desktops doesn't stall while Windows swaps wallpapers.
+- The Library shows Litely's usage with its window open and an estimate without it. With the Library closed, the tray menu shows the wallpaper's own usage.
 - Translucent and irregular windows can leave the animation running, because Litely only counts opaque windows as covering the desktop.
 
 </details>
