@@ -117,6 +117,7 @@ The same 1080p 60 fps video on the same laptop, as the wallpaper on both monitor
 - Lively used its default settings with hardware decoding on, except that its pause rules were set to keep playing while another window had focus.
 - Lively runs one mpv player per monitor. On one monitor it measured 25.5% CPU, 469 MiB RAM and 220 MiB video memory.
 - Litely decodes once for all monitors. No late frames in any Litely run.
+- RAM in these tables is working set, which also counts shared Windows libraries. Litely's own readings match Task Manager's Memory column (private working set), which is lower.
 
 </details>
 
@@ -175,7 +176,7 @@ GIFs and MPEG streams (`.mpg`, `.ts`) always get a copy. If Windows has no decod
 <details>
 <summary><b>30 fps on battery</b></summary>
 
-**Settings > 30 fps on battery** (off by default) makes a 30 fps copy of the active wallpaper once, in the background, and plays it while on battery. Litely uses about 30 MiB more RAM while it makes the copy.
+**Settings > 30 fps on battery** (off by default) makes a 30 fps copy of the active wallpaper once, in the background, and plays it while on battery. A second Litely process makes the copy and exits when it's done, so its memory is given back.
 
 </details>
 

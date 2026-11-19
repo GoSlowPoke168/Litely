@@ -1017,6 +1017,15 @@ double videoMemoryMiB(){
   }
   return read?bytes/1048576.:-1;
 }
+// RAM as Task Manager's Memory column counts it (private working set); plain working set where Windows lacks it.
+double ramMiB(){
+  struct{PROCESS_MEMORY_COUNTERS_EX base;SIZE_T privateWorkingSet;ULONG64 sharedCommit;}mem{};
+  mem.base.cb=sizeof mem;
+  if(GetProcessMemoryInfo(GetCurrentProcess(),(PROCESS_MEMORY_COUNTERS*)&mem,sizeof mem))return mem.privateWorkingSet/1048576.;
+  PROCESS_MEMORY_COUNTERS basic{sizeof basic};
+  GetProcessMemoryInfo(GetCurrentProcess(),&basic,sizeof basic);
+  return basic.WorkingSetSize/1048576.;
+}
 // Usage since the Library last closed; read just before it opens, so its own window isn't counted.
 ULONGLONG closedSince=GetTickCount64();
 double closedCPU=cpuSeconds();
@@ -1038,9 +1047,7 @@ void closedUsage(double &cpu,double &ram,double &gpu){
   ULONGLONG now=GetTickCount64();
   SYSTEM_INFO sys;GetSystemInfo(&sys);
   cpu=now-closedSince>=10000?100000.*(cpuSeconds()-closedCPU)/(now-closedSince)/sys.dwNumberOfProcessors:-1;
-  PROCESS_MEMORY_COUNTERS mem{sizeof mem};
-  GetProcessMemoryInfo(GetCurrentProcess(),&mem,sizeof mem);
-  ram=mem.WorkingSetSize/1048576.;
+  ram=ramMiB();
   gpu=videoMemoryMiB();
 }
 void sampleStats() {
@@ -1051,10 +1058,7 @@ void sampleStats() {
 
   ULONGLONG now = GetTickCount64();
   double cpu = cpuSeconds();
-  PROCESS_MEMORY_COUNTERS_EX mem{};
-  mem.cb = sizeof mem;
-  GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&mem,
-                       sizeof mem);
+  double ram = ramMiB();
   SYSTEM_INFO sys;
   GetSystemInfo(&sys);
   wchar_t gpu[64] = L"0 MiB";
@@ -1068,10 +1072,9 @@ void sampleStats() {
                              sys.dwNumberOfProcessors
                        : 0;
   wchar_t value[200];swprintf_s(value,L"%.1f%%",percent);cpuValue=lastSample?value:L"—";
-  swprintf_s(value,L"%.1f MiB",mem.WorkingSetSize/1048576.);ramValue=value;gpuValue=gpu;
+  swprintf_s(value,L"%.1f MiB",ram);ramValue=value;gpuValue=gpu;
   if(measuredSource!=source){measuredSource=source;samples=0;previousPlaying=false;}
   bool playing=ready && !paused && !covered && !batteryOverride && !parked;
-  double ram=mem.WorkingSetSize/1048576.;
   static ULONG64 lastProcessCycles=0,lastLibraryCycles=0;
   ULONG64 processCycles=0;QueryProcessCycleTime(GetCurrentProcess(),&processCycles);
   double share=lastSample && processCycles>lastProcessCycles?
