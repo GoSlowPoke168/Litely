@@ -976,12 +976,25 @@ void fillList(const fs::path &preferred = source) {
   loadPreview();
 }
 std::wstring savingsText;
-// Local video memory in MiB: 0 without a player, -1 when Windows can't say.
+// Litely's dedicated video memory on every GPU, read from the counter Task Manager shows; -1 when Windows can't say.
 double videoMemoryMiB(){
-  ComPtr<IDXGIDevice> dx;ComPtr<IDXGIAdapter> adapter;ComPtr<IDXGIAdapter3> adapter3;
-  if(!device || FAILED(device.As(&dx)) || FAILED(dx->GetAdapter(&adapter)) || FAILED(adapter.As(&adapter3)))return 0;
-  DXGI_QUERY_VIDEO_MEMORY_INFO info{};
-  return SUCCEEDED(adapter3->QueryVideoMemoryInfo(0,DXGI_MEMORY_SEGMENT_GROUP_LOCAL,&info))?info.CurrentUsage/1048576.:-1;
+  static PDH_HQUERY query;
+  static PDH_HCOUNTER counter;
+  if(!query){
+    wchar_t path[96];
+    swprintf_s(path,L"\\GPU Process Memory(pid_%lu_*)\\Dedicated Usage",GetCurrentProcessId());
+    if(PdhOpenQueryW(nullptr,0,&query)!=ERROR_SUCCESS){query=nullptr;return -1;}
+    if(PdhAddEnglishCounterW(query,path,0,&counter)!=ERROR_SUCCESS){PdhCloseQuery(query);query=nullptr;return -1;}
+  }
+  if(PdhCollectQueryData(query)!=ERROR_SUCCESS)return -1;
+  DWORD bytes=0,count=0;
+  if(PdhGetFormattedCounterArrayW(counter,PDH_FMT_DOUBLE,&bytes,&count,nullptr)!=PDH_MORE_DATA)return -1;
+  std::vector<BYTE> buffer(bytes);
+  auto items=reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
+  if(PdhGetFormattedCounterArrayW(counter,PDH_FMT_DOUBLE,&bytes,&count,items)!=ERROR_SUCCESS)return -1;
+  double total=0;
+  for(DWORD i=0;i<count;i++)total+=items[i].FmtValue.doubleValue;
+  return total/1048576.;
 }
 // Usage since the Library last closed; read just before it opens, so its own window isn't counted.
 ULONGLONG closedSince=GetTickCount64();
@@ -1027,7 +1040,7 @@ void sampleStats() {
   double video = videoMemoryMiB();
   if (video < 0)
     wcscpy_s(gpu, L"Unavailable");
-  else if (device)
+  else
     swprintf_s(gpu, L"%.1f MiB", video);
   double percent = lastSample && now > lastSample
                        ? 100000. * (cpu - lastCPU) / (now - lastSample) /
