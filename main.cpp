@@ -39,6 +39,8 @@
 #include <windowsx.h>
 #include <wrl.h>
 #include <wrl/implements.h>
+#include <winstring.h>
+#pragma comment(lib,"runtimeobject.lib")
 #include <wtsapi32.h>
 using Microsoft::WRL::ComPtr;
 using namespace Microsoft::WRL;
@@ -499,6 +501,28 @@ void forgetPosterHistory() {
       RegDeleteValueW(key, name.c_str());
   }
 }
+// Windows 11 keeps a wallpaper per virtual desktop, and switching between two different ones stalls Explorer for seconds.
+// Uses the shell's private desktop manager; a build with another layout fails QueryService and is skipped.
+void wallpaperOnAllDesktops(const fs::path &path) {
+  GUID shellId, serviceId, managerId;
+  CLSIDFromString(L"{C2F03A33-21F5-47FA-B4BB-156362A2F239}", &shellId);
+  CLSIDFromString(L"{C5E0CDCA-7B6E-41B2-9FC4-D93975CC467B}", &serviceId);
+  CLSIDFromString(L"{53F5CA0B-158F-4124-900C-057158060B27}", &managerId);
+  ComPtr<IServiceProvider> shell;
+  ComPtr<IUnknown> desktops;
+  if (FAILED(CoCreateInstance(shellId, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&shell))) ||
+      FAILED(shell->QueryService(serviceId, managerId,
+                                 reinterpret_cast<void **>(desktops.GetAddressOf()))))
+    return;
+  auto text = path.wstring();
+  HSTRING_HEADER header;
+  HSTRING value;
+  if (FAILED(WindowsCreateStringReference(text.c_str(), UINT32(text.size()), &header, &value)))
+    return;
+  // UpdateWallpaperPathForAllDesktops, the 16th method after IUnknown's three.
+  using Update = HRESULT(STDMETHODCALLTYPE *)(IUnknown *, HSTRING);
+  reinterpret_cast<Update>((*reinterpret_cast<void ***>(desktops.Get()))[18])(desktops.Get(), value);
+}
 void applyPoster(bool changed, const fs::path &path) {
   if (probe || GetEnvironmentVariableW(
                    L"LITELY_TEST_SKIP_PERSONALIZATION", nullptr, 0))
@@ -518,6 +542,7 @@ void applyPoster(bool changed, const fs::path &path) {
   DESKTOP_WALLPAPER_POSITION style;
   if (SUCCEEDED(wallpaper->GetPosition(&style)) && style != DWPOS_FILL)
     check(wallpaper->SetPosition(DWPOS_FILL));
+  wallpaperOnAllDesktops(path);
 }
 void preparePoster(bool applyCached) {
   snapshot = posterPath(source);
