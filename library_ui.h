@@ -657,9 +657,8 @@ fs::path copyDirectory(const fs::path &original){
   return folder/L"optimized"/posterPath(original).stem()/std::to_wstring(fs::last_write_time(original).time_since_epoch().count());
 }
 bool batteryFps=false,batteryCopyFailed=false;
-// The battery copy's worker thread; main.cpp waits on it.
+// The battery copy runs in its own Litely process, so the encoder's memory goes back to Windows when it exits; main.cpp waits on it.
 HANDLE batteryCopyProcess=nullptr;
-std::unique_ptr<Transcode> batteryCopy;
 fs::path batteryCopyVideo;
 bool lowestCopy(const fs::path &video){
   auto stem=video.stem().wstring();
@@ -702,9 +701,25 @@ void updatePlayFile(){
 }
 void stopBatteryCopy(bool cancelled){
   ImportJob job;
-  job.copy=std::move(batteryCopy);job.result=batteryCopyPath(batteryCopyVideo);
+  job.result=batteryCopyPath(batteryCopyVideo);
+  if(batteryCopyProcess){
+    if(cancelled)TerminateProcess(batteryCopyProcess,1);
+    WaitForSingleObject(batteryCopyProcess,INFINITE);
+    CloseHandle(batteryCopyProcess);
+  }
+  if(cancelled && !job.result.empty()){auto part=job.result;part+=L".part";DeleteFileW(part.c_str());}
   stopConversion(job,cancelled);
   batteryCopyProcess=nullptr;batteryCopyVideo.clear();
+}
+bool startBatteryCopy(const fs::path &copy){
+  wchar_t exe[MAX_PATH];
+  if(!GetModuleFileNameW(nullptr,exe,MAX_PATH))return false;
+  std::wstring line=L"\""+std::wstring(exe)+L"\" --convert \""+source.wstring()+L"\" \""+copy.wstring()+L"\" 0 1 "+(lowestCopy(source)?L"1":L"0");
+  STARTUPINFOW start{sizeof start};PROCESS_INFORMATION child{};
+  if(!CreateProcessW(exe,line.data(),nullptr,nullptr,FALSE,BELOW_NORMAL_PRIORITY_CLASS|CREATE_NO_WINDOW,nullptr,nullptr,&start,&child))return false;
+  CloseHandle(child.hThread);
+  batteryCopyProcess=child.hProcess;
+  return true;
 }
 void refreshSettings();
 void updateBatteryCopy(){
@@ -716,15 +731,14 @@ void updateBatteryCopy(){
   if(batteryCopyProcess && (!wanted || batteryCopyVideo!=source))stopBatteryCopy(true);
   if(!wanted || batteryCopyProcess)return;
   batteryCopyVideo=source;
-  batteryCopy=std::make_unique<Transcode>();
-  batteryCopy->source=source;batteryCopy->destination=copy;batteryCopy->cap=true;batteryCopy->lowest=lowestCopy(source);
-  if(transcodeStart(*batteryCopy,THREAD_PRIORITY_BELOW_NORMAL)){batteryCopyProcess=batteryCopy->thread;return;}
+  if(startBatteryCopy(copy))return;
   stopBatteryCopy(true);
   batteryCopyFailed=true;
   refreshSettings();
 }
 void finishBatteryCopy(){
-  DWORD code=transcodeStop(*batteryCopy,false);
+  DWORD code=1;
+  GetExitCodeProcess(batteryCopyProcess,&code);
   std::error_code ignored;
   auto copy=batteryCopyPath(batteryCopyVideo);
   bool made=code==0 && !copy.empty() && fs::exists(copy,ignored);

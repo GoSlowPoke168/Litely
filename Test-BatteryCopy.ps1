@@ -27,13 +27,14 @@ function New-Data($clip, $batteryFps) {
     [IO.File]::WriteAllText((Join-Path $data 'Litely\settings.ini'), "[wallpaper]`r`nfile=$clip`r`npaused=0`r`ntime=0`r`nbatteryFps=$batteryFps`r`n", [Text.Encoding]::Unicode)
     $data
 }
-function Start-Litely($data) {
+function Start-Litely($data, [switch]$Visible) {
     Get-Process Litely -ErrorAction SilentlyContinue | Stop-Process
     Start-Sleep -Milliseconds 400
     $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSScriptRoot 'build\Litely.exe'))
     $start.UseShellExecute = $false
     $start.Environment['LOCALAPPDATA'] = $data
     $start.Environment['LITELY_TEST_SKIP_PERSONALIZATION'] = '1'
+    if ($Visible) { $start.Environment['LITELY_TEST_VISIBLE'] = '1' }
     [Diagnostics.Process]::Start($start)
 }
 function Stop-Litely($app) {
@@ -82,6 +83,16 @@ try {
     Start-Sleep -Seconds 1
     if ((Get-Partial $data) -or (Get-Copies $data)) { throw 'A partial copy was left behind' }
     'exit cancels the conversion'
+    # Once the copy is made, the encoder's memory must not stay in Litely.
+    $data = New-Data $miyabi 0; $folders += $data
+    $app = Start-Litely $data -Visible; Start-Sleep -Seconds 20; $app.Refresh(); $base = $app.PrivateMemorySize64; Stop-Litely $app
+    $data = New-Data $miyabi 1; $folders += $data
+    $app = Start-Litely $data -Visible
+    for ($i = 0; $i -lt $Timeout -and !(Get-Copies $data); $i++) { Start-Sleep -Seconds 1 }
+    Start-Sleep -Seconds 15; $app.Refresh(); $after = $app.PrivateMemorySize64; Stop-Litely $app
+    $extra = ($after - $base) / 1MB
+    if (!(Get-Copies $data) -or $extra -gt 10) { throw ('Litely kept {0:N0} MiB more after making the copy' -f $extra) }
+    'memory returned after the copy ({0:N0} MiB difference)' -f $extra
 } finally {
     Get-Process Litely -ErrorAction SilentlyContinue | Stop-Process
     Start-Sleep -Milliseconds 500

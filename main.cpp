@@ -1426,7 +1426,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
   // Started by Windows at sign-in: stay in the tray even without a wallpaper.
   bool startup = argc == 2 && !wcscmp(argv[1], L"--startup");
   bool opened = argc == 2 && !startup;
-  // For tests: --convert source destination height cap(0|1) lowest(0|1); exits 0 when the copy was made, else the error.
+  // --convert source destination height cap(0|1) lowest(0|1): the battery copy and tests; exits 0 when the copy was made, else the error.
   if (argc == 7 && !wcscmp(argv[1], L"--convert")) {
     Transcode copy;
     copy.source = argv[2];
