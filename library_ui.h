@@ -201,7 +201,7 @@ bool sideFull = false, mainOff = false;
 bool autoFull = false;
 bool gridMode() { return sideWidth >= 400; }
 int heroBottom(int widthDip, int heightDip) {
-  return std::min(heightDip - 212, 92 + MulDiv(widthDip - sideWidth - 56, 100, 197));
+  return std::min(heightDip - 222, 92 + MulDiv(widthDip - sideWidth - 56, 100, 197));
 }
 std::vector<std::wstring> videoDetails;
 std::wstring cleanName(std::wstring name){
@@ -976,6 +976,27 @@ void fillList(const fs::path &preferred = source) {
   loadPreview();
 }
 std::wstring savingsText;
+// Local video memory in MiB: 0 without a player, -1 when Windows can't say.
+double videoMemoryMiB(){
+  ComPtr<IDXGIDevice> dx;ComPtr<IDXGIAdapter> adapter;ComPtr<IDXGIAdapter3> adapter3;
+  if(!device || FAILED(device.As(&dx)) || FAILED(dx->GetAdapter(&adapter)) || FAILED(adapter.As(&adapter3)))return 0;
+  DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+  return SUCCEEDED(adapter3->QueryVideoMemoryInfo(0,DXGI_MEMORY_SEGMENT_GROUP_LOCAL,&info))?info.CurrentUsage/1048576.:-1;
+}
+// Usage since the Library last closed; read just before it opens, so its own window isn't counted.
+ULONGLONG closedSince=GetTickCount64();
+double closedCPU=cpuSeconds();
+std::wstring closedValues[3];
+// CPU is -1 until the Library has been closed for 10 seconds, too short to average.
+void closedUsage(double &cpu,double &ram,double &gpu){
+  ULONGLONG now=GetTickCount64();
+  SYSTEM_INFO sys;GetSystemInfo(&sys);
+  cpu=now-closedSince>=10000?100000.*(cpuSeconds()-closedCPU)/(now-closedSince)/sys.dwNumberOfProcessors:-1;
+  PROCESS_MEMORY_COUNTERS mem{sizeof mem};
+  GetProcessMemoryInfo(GetCurrentProcess(),&mem,sizeof mem);
+  ram=mem.WorkingSetSize/1048576.;
+  gpu=videoMemoryMiB();
+}
 void sampleStats() {
   static fs::path measuredSource;
   static unsigned previousFrames=0, samples=0;
@@ -991,20 +1012,11 @@ void sampleStats() {
   SYSTEM_INFO sys;
   GetSystemInfo(&sys);
   wchar_t gpu[64] = L"0 MiB";
-  if (device) {
-    ComPtr<IDXGIDevice> dx;
-    ComPtr<IDXGIAdapter> adapter;
-    ComPtr<IDXGIAdapter3> adapter3;
-    if (SUCCEEDED(device.As(&dx)) && SUCCEEDED(dx->GetAdapter(&adapter)) &&
-        SUCCEEDED(adapter.As(&adapter3))) {
-      DXGI_QUERY_VIDEO_MEMORY_INFO info{};
-      if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(
-              0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
-        swprintf_s(gpu, L"%.1f MiB", info.CurrentUsage / 1048576.);
-      else
-        wcscpy_s(gpu, L"Unavailable");
-    }
-  }
+  double video = videoMemoryMiB();
+  if (video < 0)
+    wcscpy_s(gpu, L"Unavailable");
+  else if (device)
+    swprintf_s(gpu, L"%.1f MiB", video);
   double percent = lastSample && now > lastSample
                        ? 100000. * (cpu - lastCPU) / (now - lastSample) /
                              sys.dwNumberOfProcessors
@@ -2366,15 +2378,16 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         int col=(right-left)/3;
         for(int k=0;k<3;k++){
           int x=left+col*k;
-          if(k){UiDC mapping(dc);panel(dc,{x-1,divider+52,x,divider+98},cLine);x+=18;}
+          if(k){UiDC mapping(dc);panel(dc,{x-1,divider+52,x,divider+112},cLine);x+=18;}
           paintText(dc,k==0?L"CPU":k==1?L"RAM":L"Video memory",{x,divider+50,right,divider+68},12,mixColor(cWindow,cMuted,previewOpacity));
           const auto &value=k==0?cpuValue:k==1?ramValue:gpuValue;
           size_t space=value.find(L' ');
           int end=x+paintText(dc,value.substr(0,space),{x,divider+68,right,divider+98},23,mixColor(cWindow,cText,previewOpacity),FW_SEMIBOLD,DT_LEFT|DT_TOP|DT_SINGLELINE,textFace());
           if(space!=std::wstring::npos)
             paintText(dc,value.substr(space+1),{end+4,divider+78,right,divider+98},12,mixColor(cWindow,cMuted,previewOpacity));
+          paintText(dc,closedValues[k],{x,divider+96,left+col*(k+1)-12,divider+112},12,mixColor(cWindow,cMuted,previewOpacity),FW_NORMAL,DT_LEFT|DT_TOP|DT_SINGLELINE|DT_END_ELLIPSIS);
         }
-        paintText(dc,savingsText,{left,divider+108,right,divider+142},12,mixColor(cWindow,cMuted,previewOpacity),FW_NORMAL,DT_LEFT|DT_WORDBREAK);
+        paintText(dc,savingsText,{left,divider+120,right,divider+154},12,mixColor(cWindow,cMuted,previewOpacity),FW_NORMAL,DT_LEFT|DT_WORDBREAK);
       }
       BitBlt(screen, 0, 0, pixels.right, pixels.bottom, dc, 0, 0, SRCCOPY);
       SelectObject(dc, old);
@@ -2407,6 +2420,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
       freeDrawingCaches();
       Gdiplus::GdiplusShutdown(graphicsToken);
       trimMemory();
+      closedSince=GetTickCount64();closedCPU=cpuSeconds();
       return 0;
     }
   } catch (HRESULT error) {
@@ -2428,6 +2442,14 @@ void openLibrary(bool settings = false) {
     SetForegroundWindow(libraryWindow);
     setUiPage(settings);
     return;
+  }
+  double cpu,ram,gpu;closedUsage(cpu,ram,gpu);
+  wchar_t reading[64];
+  for(auto &v:closedValues)v.clear();
+  if(cpu>=0){
+    swprintf_s(reading,L"%.1f%% while closed",cpu);closedValues[0]=reading;
+    swprintf_s(reading,L"%.0f MiB while closed",ram);closedValues[1]=reading;
+    if(gpu>=0){swprintf_s(reading,L"%.0f MiB while closed",gpu);closedValues[2]=reading;}
   }
   libraryFiles.clear();
   auto path = folder / L"library.txt";

@@ -47,7 +47,7 @@ using namespace Microsoft::WRL;
 namespace fs = std::filesystem;
 constexpr UINT Tray = WM_APP + 1, Media = WM_APP + 2, Visibility = WM_APP + 3,
                PosterApplied = WM_APP + 4, TestPower = WM_APP + 5;
-constexpr UINT_PTR Draw = 1, Inspect = 2, Unload = 3;
+constexpr UINT_PTR Draw = 1, Inspect = 2, Unload = 3, Settled = 5;
 HWND controller;
 HINSTANCE instance;
 NOTIFYICONDATAW icon{sizeof(icon)};
@@ -982,6 +982,23 @@ void menu(const POINT *anchor) {
     return;
   menuOpen = true;
   HMENU m = CreatePopupMenu();
+  // Hidden while the Library is open: live numbers would include its window.
+  if (!libraryWindow) {
+    double cpu, ram, gpu;
+    closedUsage(cpu, ram, gpu);
+    wchar_t usage[128], part[48];
+    usage[0] = 0;
+    if (cpu >= 0)
+      swprintf_s(usage, L"%.1f%% CPU  ·  ", cpu);
+    swprintf_s(part, L"%.0f MiB RAM", ram);
+    wcscat_s(usage, part);
+    if (gpu >= 0) {
+      swprintf_s(part, L"  ·  %.0f MiB video memory", gpu);
+      wcscat_s(usage, part);
+    }
+    AppendMenu(m, MF_STRING | MF_GRAYED, 0, usage);
+    AppendMenu(m, MF_SEPARATOR, 0, nullptr);
+  }
   AppendMenu(m, MF_STRING, 10, L"Open Litely");
   SetMenuDefaultItem(m, 10, FALSE);
   AppendMenu(m, MF_STRING | (applyingPause ? MF_GRAYED : 0), 1,
@@ -1227,6 +1244,14 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
       }
       return 0;
     case WM_TIMER:
+      if (a == Settled) {
+        KillTimer(w, Settled);
+        // Startup work (first frames, the still) isn't what Litely costs while it runs.
+        if (!libraryWindow) {
+          closedSince = GetTickCount64();
+          closedCPU = cpuSeconds();
+        }
+      }
       if (a == Draw && menuOpen &&
           WaitForSingleObject(ticks, 0) == WAIT_OBJECT_0)
         playbackTick();
@@ -1359,6 +1384,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
                               nullptr, nullptr, app, nullptr);
     if (!controller)
       throw E_HANDLE;
+    SetTimer(controller, Settled, 10000, nullptr);
     ticks = CreateWaitableTimerEx(nullptr, nullptr, 0x2, TIMER_ALL_ACCESS);
     // Keeps frame presentation on time while Litely is a background process.
     DWORD task = 0;
