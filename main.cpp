@@ -39,9 +39,8 @@
 #include <windowsx.h>
 #include <wrl.h>
 #include <wrl/implements.h>
-#include <pdh.h>
-#include <pdhmsg.h>
-#pragma comment(lib,"pdh.lib")
+#include <winternl.h>
+#include <d3dkmthk.h>
 #include <winstring.h>
 #pragma comment(lib,"runtimeobject.lib")
 #include <wtsapi32.h>

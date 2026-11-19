@@ -977,24 +977,31 @@ void fillList(const fs::path &preferred = source) {
 }
 std::wstring savingsText;
 // Litely's dedicated video memory on every GPU, read from the counter Task Manager shows; -1 when Windows can't say.
+// Litely's dedicated video memory on every GPU, from the same driver statistics Task Manager reads; -1 when unavailable.
 double videoMemoryMiB(){
-  static PDH_HQUERY query;
-  static PDH_HCOUNTER counter;
-  if(!query){
-    wchar_t path[96];
-    swprintf_s(path,L"\\GPU Process Memory(pid_%lu_*)\\Dedicated Usage",GetCurrentProcessId());
-    if(PdhOpenQueryW(nullptr,0,&query)!=ERROR_SUCCESS){query=nullptr;return -1;}
-    if(PdhAddEnglishCounterW(query,path,0,&counter)!=ERROR_SUCCESS){PdhCloseQuery(query);query=nullptr;return -1;}
+  ComPtr<IDXGIFactory1> factory;
+  if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))return -1;
+  ULONGLONG bytes=0;bool read=false;
+  ComPtr<IDXGIAdapter1> adapter;
+  for(UINT i=0;factory->EnumAdapters1(i,&adapter)==S_OK;i++,adapter.Reset()){
+    DXGI_ADAPTER_DESC1 about;
+    if(FAILED(adapter->GetDesc1(&about)))continue;
+    D3DKMT_QUERYSTATISTICS card{};
+    card.Type=D3DKMT_QUERYSTATISTICS_ADAPTER;card.AdapterLuid=about.AdapterLuid;
+    if(D3DKMTQueryStatistics(&card)<0)continue;
+    for(ULONG s=0;s<card.QueryResult.AdapterInformation.NbSegments;s++){
+      D3DKMT_QUERYSTATISTICS segment{};
+      segment.Type=D3DKMT_QUERYSTATISTICS_SEGMENT;segment.AdapterLuid=about.AdapterLuid;segment.QuerySegment.SegmentId=s;
+      // Aperture segments are shared system memory, which Task Manager doesn't count as dedicated.
+      if(D3DKMTQueryStatistics(&segment)<0 || segment.QueryResult.SegmentInformation.Aperture)continue;
+      D3DKMT_QUERYSTATISTICS mine{};
+      mine.Type=D3DKMT_QUERYSTATISTICS_PROCESS_SEGMENT;mine.AdapterLuid=about.AdapterLuid;
+      mine.hProcess=GetCurrentProcess();mine.QueryProcessSegment.SegmentId=s;
+      if(D3DKMTQueryStatistics(&mine)<0)continue;
+      bytes+=mine.QueryResult.ProcessSegmentInformation.BytesCommitted;read=true;
+    }
   }
-  if(PdhCollectQueryData(query)!=ERROR_SUCCESS)return -1;
-  DWORD bytes=0,count=0;
-  if(PdhGetFormattedCounterArrayW(counter,PDH_FMT_DOUBLE,&bytes,&count,nullptr)!=PDH_MORE_DATA)return -1;
-  std::vector<BYTE> buffer(bytes);
-  auto items=reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
-  if(PdhGetFormattedCounterArrayW(counter,PDH_FMT_DOUBLE,&bytes,&count,items)!=ERROR_SUCCESS)return -1;
-  double total=0;
-  for(DWORD i=0;i<count;i++)total+=items[i].FmtValue.doubleValue;
-  return total/1048576.;
+  return read?bytes/1048576.:-1;
 }
 // Usage since the Library last closed; read just before it opens, so its own window isn't counted.
 ULONGLONG closedSince=GetTickCount64();
