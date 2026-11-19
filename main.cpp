@@ -982,6 +982,7 @@ bool menuOpen = false, menuDismissed = false;
 DWORD menuDismissTime = 0;
 // The tray menu's usage line, refreshed every second while the menu is open.
 std::wstring trayUsage[3];
+HMENU trayMenu;
 ULONGLONG trayUsageAt = 0;
 double trayUsageCPU = 0;
 void refreshTrayUsage() {
@@ -1050,6 +1051,7 @@ void menu(const POINT *anchor) {
     refreshTrayUsage();
     // Drawn by Litely: Windows greys disabled items too faintly to read.
     AppendMenu(m, MF_OWNERDRAW | MF_DISABLED, UsageItem, nullptr);
+    trayMenu = m;
     AppendMenu(m, MF_SEPARATOR, 0, nullptr);
     SetTimer(controller, UsageTick, 1000, nullptr);
   }
@@ -1316,39 +1318,56 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
         break;
       int labelWidth, valueWidth, line;
       usageMetrics(item->hDC, labelWidth, valueWidth, line);
-      auto old = SelectObject(item->hDC, menuFont());
-      SetBkMode(item->hDC, TRANSPARENT);
+      RECT box = item->rcItem;
+      int boxWidth = box.right - box.left, boxHeight = box.bottom - box.top;
+      // Drawn off-screen and copied once, so the per-second refresh doesn't flash.
+      HDC dc = CreateCompatibleDC(item->hDC);
+      HBITMAP canvas = CreateCompatibleBitmap(item->hDC, boxWidth, boxHeight);
+      auto oldCanvas = SelectObject(dc, canvas);
+      RECT fill{0, 0, boxWidth, boxHeight};
+      FillRect(dc, &fill, GetSysColorBrush(COLOR_MENU));
+      auto old = SelectObject(dc, menuFont());
+      SetBkMode(dc, TRANSPARENT);
       UINT dpi = GetDpiForWindow(controller);
       // Lines up with the other items' text, which Windows indents past the check-mark column.
-      int left = item->rcItem.left + GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi) + MulDiv(8, dpi, 288);
-      int top = item->rcItem.top + line / 2;
+      int left = GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi) + MulDiv(8, dpi, 288);
+      int top = line / 2;
       // Says whose usage this is: with the Library closed, Litely is only playing the wallpaper.
-      RECT heading{left, top, item->rcItem.right, top + line};
-      SelectObject(item->hDC, menuFont(true));
-      SetTextColor(item->hDC, RGB(24, 24, 24));
-      DrawTextW(item->hDC, L"Wallpaper usage", -1, &heading, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
-      SelectObject(item->hDC, menuFont());
+      RECT heading{left, top, boxWidth, top + line};
+      SelectObject(dc, menuFont(true));
+      SetTextColor(dc, RGB(24, 24, 24));
+      DrawTextW(dc, L"Wallpaper usage", -1, &heading, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
+      SelectObject(dc, menuFont());
       top += line;
       for (int k = 0; k < 3; k++) {
         RECT label{left, top + line * k, left + labelWidth, top + line * (k + 1)};
-        SetTextColor(item->hDC, RGB(96, 96, 96));
-        DrawTextW(item->hDC, usageLabels[k], -1, &label, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
+        SetTextColor(dc, RGB(96, 96, 96));
+        DrawTextW(dc, usageLabels[k], -1, &label, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
         RECT value{label.right + line, label.top, label.right + line + valueWidth, label.bottom};
-        SetTextColor(item->hDC, RGB(24, 24, 24));
-        DrawTextW(item->hDC, trayUsage[k].c_str(), -1, &value, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
+        SetTextColor(dc, RGB(24, 24, 24));
+        DrawTextW(dc, trayUsage[k].c_str(), -1, &value, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
       }
-      SelectObject(item->hDC, old);
+      BitBlt(item->hDC, box.left, box.top, boxWidth, boxHeight, dc, 0, 0, SRCCOPY);
+      SelectObject(dc, old);
+      SelectObject(dc, oldCanvas);
+      DeleteObject(canvas);
+      DeleteDC(dc);
       return TRUE;
     }
     case WM_TIMER:
       if (a == UsageTick && menuOpen) {
         refreshTrayUsage();
-        EnumThreadWindows(GetCurrentThreadId(), [](HWND menuWindow, LPARAM) -> BOOL {
-          wchar_t name[16];
-          if (GetClassNameW(menuWindow, name, 16) && !wcscmp(name, L"#32768"))
-            InvalidateRect(menuWindow, nullptr, TRUE);
-          return TRUE;
-        }, 0);
+        RECT block;
+        if (GetMenuItemRect(nullptr, trayMenu, 0, &block))
+          EnumThreadWindows(GetCurrentThreadId(), [](HWND menuWindow, LPARAM area) -> BOOL {
+            wchar_t name[16];
+            if (GetClassNameW(menuWindow, name, 16) && !wcscmp(name, L"#32768")) {
+              RECT r = *reinterpret_cast<RECT *>(area);
+              MapWindowPoints(nullptr, menuWindow, reinterpret_cast<POINT *>(&r), 2);
+              InvalidateRect(menuWindow, &r, FALSE);
+            }
+            return TRUE;
+          }, reinterpret_cast<LPARAM>(&block));
       }
       if (a == Settled) {
         KillTimer(w, Settled);
