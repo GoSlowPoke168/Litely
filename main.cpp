@@ -1011,19 +1011,21 @@ void refreshTrayUsage() {
     wcscpy_s(text, L"Unavailable");
   trayUsage[2] = text;
 }
-HFONT menuFont() {
-  static HFONT font;
+HFONT menuFont(bool heading = false) {
+  static HFONT font, bold;
   static UINT fontDpi;
   UINT dpi = GetDpiForWindow(controller);
   if (!font || fontDpi != dpi) {
     NONCLIENTMETRICS metrics{sizeof metrics};
     SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof metrics, &metrics, 0, dpi);
     if (font)
-      DeleteObject(font);
+      DeleteObject(font), DeleteObject(bold);
     font = CreateFontIndirect(&metrics.lfMenuFont);
+    metrics.lfMenuFont.lfWeight = FW_SEMIBOLD;
+    bold = CreateFontIndirect(&metrics.lfMenuFont);
     fontDpi = dpi;
   }
-  return font;
+  return heading ? bold : font;
 }
 const wchar_t *const usageLabels[3] = {L"CPU", L"RAM", L"Video memory"};
 // Measures the usage block: label column width and line height, in device pixels.
@@ -1306,7 +1308,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
       usageMetrics(dc, labelWidth, valueWidth, line);
       ReleaseDC(controller, dc);
       item->itemWidth = labelWidth + line * 2 + valueWidth;
-      item->itemHeight = line * 3 + line;
+      item->itemHeight = line * 4 + line;
       return TRUE;
     }
     case WM_DRAWITEM: {
@@ -1321,6 +1323,13 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
       // Lines up with the other items' text, which Windows indents past the check-mark column.
       int left = item->rcItem.left + GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi) + MulDiv(8, dpi, 288);
       int top = item->rcItem.top + line / 2;
+      // Says whose usage this is: with the Library closed, Litely is only playing the wallpaper.
+      RECT heading{left, top, item->rcItem.right, top + line};
+      SelectObject(item->hDC, menuFont(true));
+      SetTextColor(item->hDC, RGB(24, 24, 24));
+      DrawTextW(item->hDC, L"Wallpaper usage", -1, &heading, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
+      SelectObject(item->hDC, menuFont());
+      top += line;
       for (int k = 0; k < 3; k++) {
         RECT label{left, top + line * k, left + labelWidth, top + line * (k + 1)};
         SetTextColor(item->hDC, RGB(96, 96, 96));
