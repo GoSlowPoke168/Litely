@@ -1976,6 +1976,8 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           KillTimer(w, 2);
         RECT art;GetClientRect(w,&art);art.left=px(sideWidth+28);art.top=px(92);art.bottom=px(heroBottom(dip(art.right),dip(art.bottom)));art.right-=px(28);
         InvalidateRect(w,&art,FALSE);
+        // The buttons fade with the preview but are child windows, so the parent's invalidation misses them.
+        InvalidateRect(GetDlgItem(w,102),nullptr,FALSE);InvalidateRect(GetDlgItem(w,109),nullptr,FALSE);
       }
       return 0;
     case PreviewReady:
