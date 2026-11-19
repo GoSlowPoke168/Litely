@@ -47,7 +47,8 @@ using namespace Microsoft::WRL;
 namespace fs = std::filesystem;
 constexpr UINT Tray = WM_APP + 1, Media = WM_APP + 2, Visibility = WM_APP + 3,
                PosterApplied = WM_APP + 4, TestPower = WM_APP + 5;
-constexpr UINT_PTR Draw = 1, Inspect = 2, Unload = 3, Settled = 5;
+constexpr UINT_PTR Draw = 1, Inspect = 2, Unload = 3, Settled = 5, UsageTick = 6;
+constexpr UINT UsageItem = 98;
 HWND controller;
 HINSTANCE instance;
 NOTIFYICONDATAW icon{sizeof(icon)};
@@ -977,6 +978,63 @@ void selectFile() {
 #include "library_ui.h"
 bool menuOpen = false, menuDismissed = false;
 DWORD menuDismissTime = 0;
+// The tray menu's usage line, refreshed every second while the menu is open.
+std::wstring trayUsage[3];
+ULONGLONG trayUsageAt = 0;
+double trayUsageCPU = 0;
+void refreshTrayUsage() {
+  double cpu, ram, gpu;
+  closedUsage(cpu, ram, gpu);
+  ULONGLONG now = GetTickCount64();
+  double used = cpuSeconds();
+  if (trayUsageAt && now > trayUsageAt) {
+    SYSTEM_INFO sys;
+    GetSystemInfo(&sys);
+    cpu = 100000. * (used - trayUsageCPU) / (now - trayUsageAt) / sys.dwNumberOfProcessors;
+  }
+  trayUsageAt = now;
+  trayUsageCPU = used;
+  wchar_t text[32];
+  if (cpu >= 0)
+    swprintf_s(text, L"%.1f%%", cpu);
+  else
+    wcscpy_s(text, L"—");
+  trayUsage[0] = text;
+  swprintf_s(text, L"%.0f MiB", ram);
+  trayUsage[1] = text;
+  if (gpu >= 0)
+    swprintf_s(text, L"%.0f MiB", gpu);
+  else
+    wcscpy_s(text, L"Unavailable");
+  trayUsage[2] = text;
+}
+HFONT menuFont() {
+  static HFONT font;
+  static UINT fontDpi;
+  UINT dpi = GetDpiForWindow(controller);
+  if (!font || fontDpi != dpi) {
+    NONCLIENTMETRICS metrics{sizeof metrics};
+    SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof metrics, &metrics, 0, dpi);
+    if (font)
+      DeleteObject(font);
+    font = CreateFontIndirect(&metrics.lfMenuFont);
+    fontDpi = dpi;
+  }
+  return font;
+}
+const wchar_t *const usageLabels[3] = {L"CPU", L"RAM", L"Video memory"};
+// Measures the usage block: label column width and line height, in device pixels.
+void usageMetrics(HDC dc, int &labelWidth, int &valueWidth, int &line) {
+  auto old = SelectObject(dc, menuFont());
+  SIZE size{};
+  GetTextExtentPoint32W(dc, usageLabels[2], (int)wcslen(usageLabels[2]), &size);
+  labelWidth = size.cx;
+  line = size.cy;
+  // Sized for the widest reading, so the menu never needs to grow.
+  GetTextExtentPoint32W(dc, L"Unavailable", 11, &size);
+  valueWidth = size.cx;
+  SelectObject(dc, old);
+}
 void menu(const POINT *anchor) {
   if (menuOpen)
     return;
@@ -984,20 +1042,12 @@ void menu(const POINT *anchor) {
   HMENU m = CreatePopupMenu();
   // Hidden while the Library is open: live numbers would include its window.
   if (!libraryWindow) {
-    double cpu, ram, gpu;
-    closedUsage(cpu, ram, gpu);
-    wchar_t usage[128], part[48];
-    usage[0] = 0;
-    if (cpu >= 0)
-      swprintf_s(usage, L"%.1f%% CPU  ·  ", cpu);
-    swprintf_s(part, L"%.0f MiB RAM", ram);
-    wcscat_s(usage, part);
-    if (gpu >= 0) {
-      swprintf_s(part, L"  ·  %.0f MiB video memory", gpu);
-      wcscat_s(usage, part);
-    }
-    AppendMenu(m, MF_STRING | MF_GRAYED, 0, usage);
+    trayUsageAt = 0;
+    refreshTrayUsage();
+    // Drawn by Litely: Windows greys disabled items too faintly to read.
+    AppendMenu(m, MF_OWNERDRAW | MF_DISABLED, UsageItem, nullptr);
     AppendMenu(m, MF_SEPARATOR, 0, nullptr);
+    SetTimer(controller, UsageTick, 1000, nullptr);
   }
   AppendMenu(m, MF_STRING, 10, L"Open Litely");
   SetMenuDefaultItem(m, 10, FALSE);
@@ -1023,6 +1073,7 @@ void menu(const POINT *anchor) {
   int id = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTBUTTON | (anchor ? TPM_BOTTOMALIGN : 0), p.x, p.y, 0,
                           controller, nullptr);
   KillTimer(controller, Draw);
+  KillTimer(controller, UsageTick);
   menuDismissTime = GetTickCount();
   menuDismissed = true;
   menuOpen = false;
@@ -1243,7 +1294,51 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
         }
       }
       return 0;
+    case WM_MEASUREITEM: {
+      auto item = reinterpret_cast<MEASUREITEMSTRUCT *>(b);
+      if (item->CtlType != ODT_MENU || item->itemID != UsageItem)
+        break;
+      HDC dc = GetDC(controller);
+      int labelWidth, valueWidth, line;
+      usageMetrics(dc, labelWidth, valueWidth, line);
+      ReleaseDC(controller, dc);
+      item->itemWidth = labelWidth + line * 2 + valueWidth;
+      item->itemHeight = line * 3 + line;
+      return TRUE;
+    }
+    case WM_DRAWITEM: {
+      auto item = reinterpret_cast<DRAWITEMSTRUCT *>(b);
+      if (item->CtlType != ODT_MENU || item->itemID != UsageItem)
+        break;
+      int labelWidth, valueWidth, line;
+      usageMetrics(item->hDC, labelWidth, valueWidth, line);
+      auto old = SelectObject(item->hDC, menuFont());
+      SetBkMode(item->hDC, TRANSPARENT);
+      UINT dpi = GetDpiForWindow(controller);
+      // Lines up with the other items' text, which Windows indents past the check-mark column.
+      int left = item->rcItem.left + GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi) + MulDiv(8, dpi, 288);
+      int top = item->rcItem.top + line / 2;
+      for (int k = 0; k < 3; k++) {
+        RECT label{left, top + line * k, left + labelWidth, top + line * (k + 1)};
+        SetTextColor(item->hDC, RGB(96, 96, 96));
+        DrawTextW(item->hDC, usageLabels[k], -1, &label, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
+        RECT value{label.right + line, label.top, label.right + line + valueWidth, label.bottom};
+        SetTextColor(item->hDC, RGB(24, 24, 24));
+        DrawTextW(item->hDC, trayUsage[k].c_str(), -1, &value, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
+      }
+      SelectObject(item->hDC, old);
+      return TRUE;
+    }
     case WM_TIMER:
+      if (a == UsageTick && menuOpen) {
+        refreshTrayUsage();
+        EnumThreadWindows(GetCurrentThreadId(), [](HWND menuWindow, LPARAM) -> BOOL {
+          wchar_t name[16];
+          if (GetClassNameW(menuWindow, name, 16) && !wcscmp(name, L"#32768"))
+            InvalidateRect(menuWindow, nullptr, TRUE);
+          return TRUE;
+        }, 0);
+      }
       if (a == Settled) {
         KillTimer(w, Settled);
         // Startup work (first frames, the still) isn't what Litely costs while it runs.
@@ -1476,10 +1571,16 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           running = false;
           break;
         }
-        if (libraryWindow && IsDialogMessage(libraryWindow, &m))
-          continue;
-        TranslateMessage(&m);
-        DispatchMessage(&m);
+        bool library = libraryWindow && (m.hwnd == libraryWindow || IsChild(libraryWindow, m.hwnd));
+        ULONG64 before = 0, after = 0;
+        if (library)
+          QueryThreadCycleTime(GetCurrentThread(), &before);
+        if (!libraryWindow || !IsDialogMessage(libraryWindow, &m)) {
+          TranslateMessage(&m);
+          DispatchMessage(&m);
+        }
+        if (library && QueryThreadCycleTime(GetCurrentThread(), &after))
+          libraryCycles += after - before;
       }
       if (probe && running) {
         if (phase == 0 && frames >= 5 && !sampleStart) {

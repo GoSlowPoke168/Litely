@@ -987,6 +987,18 @@ double videoMemoryMiB(){
 ULONGLONG closedSince=GetTickCount64();
 double closedCPU=cpuSeconds();
 std::wstring closedValues[3];
+// Main-thread cycles spent on the Library's own messages, counted by the message loop.
+ULONG64 libraryCycles=0;
+// RAM when the Library opened, and how much it added once settled (-1 until measured).
+double closedRAM=0,libraryExtraRAM=-1;
+ULONGLONG libraryOpenedAt=0;
+void withoutWindow(double cpu,double ram,double gpu){
+  wchar_t reading[64];
+  if(cpu>=0){swprintf_s(reading,L"%.1f%% without this window",cpu);closedValues[0]=reading;}
+  swprintf_s(reading,L"≈ %.0f MiB without this window",ram);closedValues[1]=reading;
+  if(gpu>=0){swprintf_s(reading,L"%.0f MiB without this window",gpu);closedValues[2]=reading;}
+  else closedValues[2].clear();
+}
 // CPU is -1 until the Library has been closed for 10 seconds, too short to average.
 void closedUsage(double &cpu,double &ram,double &gpu){
   ULONGLONG now=GetTickCount64();
@@ -1026,6 +1038,13 @@ void sampleStats() {
   if(measuredSource!=source){measuredSource=source;samples=0;previousPlaying=false;}
   bool playing=ready && !paused && !covered && !batteryOverride && !parked;
   double ram=mem.WorkingSetSize/1048576.;
+  static ULONG64 lastProcessCycles=0,lastLibraryCycles=0;
+  ULONG64 processCycles=0;QueryProcessCycleTime(GetCurrentProcess(),&processCycles);
+  double share=lastSample && processCycles>lastProcessCycles?
+    std::min(1.,double(libraryCycles-lastLibraryCycles)/double(processCycles-lastProcessCycles)):0;
+  lastProcessCycles=processCycles;lastLibraryCycles=libraryCycles;
+  if(libraryExtraRAM<0 && now-libraryOpenedAt>=3000)libraryExtraRAM=std::max(0.,ram-closedRAM);
+  withoutWindow(lastSample?percent*(1-share):-1,libraryExtraRAM<0?closedRAM:ram-libraryExtraRAM,video);
   if(lastSample && now-lastSample<2500 && playing && previousPlaying && frames!=previousFrames){
     ++samples;
     playingCPU+=(percent-playingCPU)/std::min(samples,10u);
@@ -2385,7 +2404,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           int end=x+paintText(dc,value.substr(0,space),{x,divider+68,right,divider+98},23,mixColor(cWindow,cText,previewOpacity),FW_SEMIBOLD,DT_LEFT|DT_TOP|DT_SINGLELINE,textFace());
           if(space!=std::wstring::npos)
             paintText(dc,value.substr(space+1),{end+4,divider+78,right,divider+98},12,mixColor(cWindow,cMuted,previewOpacity));
-          paintText(dc,closedValues[k],{x,divider+96,left+col*(k+1)-12,divider+112},12,mixColor(cWindow,cMuted,previewOpacity),FW_NORMAL,DT_LEFT|DT_TOP|DT_SINGLELINE|DT_END_ELLIPSIS);
+          paintText(dc,closedValues[k],{x,divider+96,left+col*(k+1)-12,divider+112},12,mixColor(cWindow,cSoft,previewOpacity),FW_NORMAL,DT_LEFT|DT_TOP|DT_SINGLELINE|DT_END_ELLIPSIS);
         }
         paintText(dc,savingsText,{left,divider+120,right,divider+154},12,mixColor(cWindow,cMuted,previewOpacity),FW_NORMAL,DT_LEFT|DT_WORDBREAK);
       }
@@ -2444,13 +2463,9 @@ void openLibrary(bool settings = false) {
     return;
   }
   double cpu,ram,gpu;closedUsage(cpu,ram,gpu);
-  wchar_t reading[64];
-  for(auto &v:closedValues)v.clear();
-  if(cpu>=0){
-    swprintf_s(reading,L"%.1f%% while closed",cpu);closedValues[0]=reading;
-    swprintf_s(reading,L"%.0f MiB while closed",ram);closedValues[1]=reading;
-    if(gpu>=0){swprintf_s(reading,L"%.0f MiB while closed",gpu);closedValues[2]=reading;}
-  }
+  closedRAM=ram;libraryExtraRAM=-1;libraryOpenedAt=GetTickCount64();
+  closedValues[0].clear();
+  withoutWindow(cpu,ram,gpu);
   libraryFiles.clear();
   auto path = folder / L"library.txt";
   if (fs::exists(path)) {
