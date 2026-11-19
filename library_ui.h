@@ -1035,7 +1035,10 @@ ULONG64 libraryCycles=0;
 // RAM when the Library opened, and how much it added once settled (-1 until measured).
 double closedRAM=0,libraryExtraRAM=-1;
 ULONGLONG libraryOpenedAt=0;
+// The wallpaper's usage without the Library window, also shown in the tray while the Library is open.
+double withoutCPU=-1,withoutRAM=0,withoutGPU=-1;
 void withoutWindow(double cpu,double ram,double gpu){
+  withoutCPU=cpu;withoutRAM=ram;withoutGPU=gpu;
   wchar_t reading[64];
   if(cpu>=0){swprintf_s(reading,L"%.1f%% without this window",cpu);closedValues[0]=reading;}
   swprintf_s(reading,L"≈ %.0f MiB without this window",ram);closedValues[1]=reading;

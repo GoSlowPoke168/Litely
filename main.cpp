@@ -992,10 +992,15 @@ ULONGLONG trayUsageAt = 0;
 double trayUsageCPU = 0;
 void refreshTrayUsage() {
   double cpu, ram, gpu;
-  closedUsage(cpu, ram, gpu);
+  // With the Library open, the Library's estimate leaves its own window out.
+  bool estimate = libraryWindow != nullptr;
+  if (estimate)
+    cpu = withoutCPU, ram = withoutRAM, gpu = withoutGPU;
+  else
+    closedUsage(cpu, ram, gpu);
   ULONGLONG now = GetTickCount64();
   double used = cpuSeconds();
-  if (trayUsageAt && now > trayUsageAt) {
+  if (!estimate && trayUsageAt && now > trayUsageAt) {
     SYSTEM_INFO sys;
     GetSystemInfo(&sys);
     cpu = 100000. * (used - trayUsageCPU) / (now - trayUsageAt) / sys.dwNumberOfProcessors;
@@ -1008,7 +1013,7 @@ void refreshTrayUsage() {
   else
     wcscpy_s(text, L"—");
   trayUsage[0] = text;
-  swprintf_s(text, L"%.0f MiB", ram);
+  swprintf_s(text, estimate ? L"≈ %.0f MiB" : L"%.0f MiB", ram);
   trayUsage[1] = text;
   if (gpu >= 0)
     swprintf_s(text, L"%.0f MiB", gpu);
@@ -1050,16 +1055,13 @@ void menu(const POINT *anchor) {
     return;
   menuOpen = true;
   HMENU m = CreatePopupMenu();
-  // Hidden while the Library is open: live numbers would include its window.
-  if (!libraryWindow) {
-    trayUsageAt = 0;
-    refreshTrayUsage();
-    // Drawn by Litely: Windows greys disabled items too faintly to read.
-    AppendMenu(m, MF_OWNERDRAW | MF_DISABLED, UsageItem, nullptr);
-    trayMenu = m;
-    AppendMenu(m, MF_SEPARATOR, 0, nullptr);
-    SetTimer(controller, UsageTick, 1000, nullptr);
-  }
+  trayUsageAt = 0;
+  refreshTrayUsage();
+  // Drawn by Litely: Windows greys disabled items too faintly to read.
+  AppendMenu(m, MF_OWNERDRAW | MF_DISABLED, UsageItem, nullptr);
+  trayMenu = m;
+  AppendMenu(m, MF_SEPARATOR, 0, nullptr);
+  SetTimer(controller, UsageTick, 1000, nullptr);
   AppendMenu(m, MF_STRING, 10, L"Open Litely");
   SetMenuDefaultItem(m, 10, FALSE);
   AppendMenu(m, MF_STRING | (applyingPause ? MF_GRAYED : 0), 1,
