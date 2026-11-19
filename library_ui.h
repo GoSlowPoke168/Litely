@@ -1310,6 +1310,12 @@ std::unique_ptr<Gdiplus::Bitmap> readTile(const fs::path &path){
   if(g.DrawImage(&file,Gdiplus::RectF(0,0,480,270),(sw-480*scale)/2,(sh-270*scale)/2,480*scale,270*scale,Gdiplus::UnitPixel)!=Gdiplus::Ok)return {};
   return tile;
 }
+// The item on the desktop shows its status, then its format.
+void paintDetail(HDC buffer,int i,RECT r){
+  if(_wcsicmp(libraryFiles[i].c_str(),source.c_str())){paintText(buffer,videoDetails[i],r,12,cMuted);return;}
+  int used=paintText(buffer,paused||batteryOverride?L"On desktop · paused":L"On desktop",r,12,cAccent);
+  if(!videoDetails[i].empty() && r.left+used<r.right)paintText(buffer,L" · "+videoDetails[i],{r.left+used,r.top,r.right,r.bottom},12,cMuted);
+}
 void drawCell(HDC buffer,RECT r,int i,bool selected,bool hot,bool more,bool focus,bool grid){
   if(!grid){
   fillRect(buffer,r,cSidebar);
@@ -1323,9 +1329,7 @@ void drawCell(HDC buffer,RECT r,int i,bool selected,bool hot,bool more,bool focu
   else{fillRound(buffer,thumb,cRaised,5);paintIcon(buffer,L"",thumb,16,cMuted);}
   roundCorners(buffer,thumb,5,fill);
   paintText(buffer,displayName(libraryFiles[i]),{r.left+76,r.top+15,r.right-8,r.top+34},13,cText,FW_SEMIBOLD);
-  bool active=!_wcsicmp(libraryFiles[i].c_str(),source.c_str());
-  auto detail=active?(paused||batteryOverride?L"On desktop · paused":L"On desktop"):videoDetails[i];
-  paintText(buffer,detail,{r.left+76,r.top+37,r.right-8,r.bottom-8},12,active?cAccent:cMuted);
+  paintDetail(buffer,i,{r.left+76,r.top+37,r.right-8,r.bottom-8});
   if(focus)focusRing(buffer,{r.left+2,r.top+2,r.right-2,r.bottom-2},8);
     return;
   }
@@ -1344,9 +1348,7 @@ void drawCell(HDC buffer,RECT r,int i,bool selected,bool hot,bool more,bool focu
     paintIcon(buffer,L"",dots,14,cText);
   }
   paintText(buffer,displayName(libraryFiles[i]),{r.left+10,thumb.bottom+9,r.right-10,thumb.bottom+28},13,cText,FW_SEMIBOLD);
-  bool active=!_wcsicmp(libraryFiles[i].c_str(),source.c_str());
-  auto detail=active?(paused||batteryOverride?L"On desktop · paused":L"On desktop"):videoDetails[i];
-  paintText(buffer,detail,{r.left+10,thumb.bottom+30,r.right-10,thumb.bottom+48},12,active?cAccent:cMuted);
+  paintDetail(buffer,i,{r.left+10,thumb.bottom+30,r.right-10,thumb.bottom+48});
   if(focus)focusRing(buffer,{r.left+2,r.top+2,r.right-2,r.bottom-2},10);
 }
 const wchar_t *actionCaption();
