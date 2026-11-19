@@ -504,9 +504,14 @@ void forgetPosterHistory() {
       RegDeleteValueW(key, name.c_str());
   }
 }
+extern "C" NTSTATUS NTAPI RtlGetVersion(PRTL_OSVERSIONINFOW version);
+#pragma comment(lib, "ntdll.lib")
 // Windows 11 keeps a wallpaper per virtual desktop, and switching between two different ones stalls Explorer for seconds.
-// Uses the shell's private desktop manager; a build with another layout fails QueryService and is skipped.
+// Uses the shell's private desktop manager, whose layout changes between builds: only from 24H2, and only if QueryService succeeds.
 void wallpaperOnAllDesktops(const fs::path &path) {
+  RTL_OSVERSIONINFOW version{sizeof version};
+  if (RtlGetVersion(&version) != 0 || version.dwBuildNumber < 26100)
+    return;
   GUID shellId, serviceId, managerId;
   CLSIDFromString(L"{C2F03A33-21F5-47FA-B4BB-156362A2F239}", &shellId);
   CLSIDFromString(L"{C5E0CDCA-7B6E-41B2-9FC4-D93975CC467B}", &serviceId);
