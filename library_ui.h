@@ -659,7 +659,7 @@ fs::path copyDirectory(const fs::path &original){
 bool batteryFps=false,batteryCopyFailed=false;
 // The battery copy runs in its own Litely process, so the encoder's memory goes back to Windows when it exits; main.cpp waits on it.
 HANDLE batteryCopyProcess=nullptr;
-fs::path batteryCopyVideo;
+fs::path batteryCopyVideo,batteryCopyTarget;
 bool lowestCopy(const fs::path &video){
   auto stem=video.stem().wstring();
   return stem.size()>7 && !stem.compare(stem.size()-7,7,L"-lowmem");
@@ -701,24 +701,39 @@ void updatePlayFile(){
 }
 void stopBatteryCopy(bool cancelled){
   ImportJob job;
-  job.result=batteryCopyPath(batteryCopyVideo);
+  job.result=batteryCopyTarget;
   if(batteryCopyProcess){
     if(cancelled)TerminateProcess(batteryCopyProcess,1);
     WaitForSingleObject(batteryCopyProcess,INFINITE);
     CloseHandle(batteryCopyProcess);
   }
-  if(cancelled && !job.result.empty()){auto part=job.result;part+=L".part";DeleteFileW(part.c_str());}
-  stopConversion(job,cancelled);
-  batteryCopyProcess=nullptr;batteryCopyVideo.clear();
+  if(!job.result.empty()){
+    if(cancelled){auto part=job.result;part+=L".part";DeleteFileW(part.c_str());}
+    stopConversion(job,cancelled);
+  }
+  batteryCopyProcess=nullptr;batteryCopyVideo.clear();batteryCopyTarget.clear();
 }
 bool startBatteryCopy(const fs::path &copy){
-  wchar_t exe[MAX_PATH];
-  if(!GetModuleFileNameW(nullptr,exe,MAX_PATH))return false;
-  std::wstring line=L"\""+std::wstring(exe)+L"\" --convert \""+source.wstring()+L"\" \""+copy.wstring()+L"\" 0 1 "+(lowestCopy(source)?L"1":L"0");
-  STARTUPINFOW start{sizeof start};PROCESS_INFORMATION child{};
-  if(!CreateProcessW(exe,line.data(),nullptr,nullptr,FALSE,BELOW_NORMAL_PRIORITY_CLASS|CREATE_NO_WINDOW,nullptr,nullptr,&start,&child))return false;
+  // Closed when Litely exits or crashes, which ends the copy with it.
+  static HANDLE job=[]{
+    HANDLE created=CreateJobObjectW(nullptr,nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if(created)SetInformationJobObject(created,JobObjectExtendedLimitInformation,&limits,sizeof limits);
+    return created;
+  }();
+  std::wstring exe(32768,L'\0');
+  DWORD length=GetModuleFileNameW(nullptr,exe.data(),32768);
+  if(!length || length>=32768)return false;
+  exe.resize(length);
+  std::wstring line=L"\""+exe+L"\" --convert \""+source.wstring()+L"\" \""+copy.wstring()+L"\" 0 1 "+(lowestCopy(source)?L"1":L"0");
+  STARTUPINFOW start{sizeof start};start.dwFlags=STARTF_FORCEOFFFEEDBACK;
+  PROCESS_INFORMATION child{};
+  if(!CreateProcessW(exe.c_str(),line.data(),nullptr,nullptr,FALSE,BELOW_NORMAL_PRIORITY_CLASS|CREATE_NO_WINDOW|CREATE_SUSPENDED,nullptr,nullptr,&start,&child))return false;
+  if(job)AssignProcessToJobObject(job,child.hProcess);
+  ResumeThread(child.hThread);
   CloseHandle(child.hThread);
-  batteryCopyProcess=child.hProcess;
+  batteryCopyProcess=child.hProcess;batteryCopyTarget=copy;
   return true;
 }
 void refreshSettings();
@@ -1021,10 +1036,9 @@ double videoMemoryMiB(){
 double ramMiB(){
   struct{PROCESS_MEMORY_COUNTERS_EX base;SIZE_T privateWorkingSet;ULONG64 sharedCommit;}mem{};
   mem.base.cb=sizeof mem;
-  if(GetProcessMemoryInfo(GetCurrentProcess(),(PROCESS_MEMORY_COUNTERS*)&mem,sizeof mem))return mem.privateWorkingSet/1048576.;
-  PROCESS_MEMORY_COUNTERS basic{sizeof basic};
-  GetProcessMemoryInfo(GetCurrentProcess(),&basic,sizeof basic);
-  return basic.WorkingSetSize/1048576.;
+  // Older Windows accepts the larger size but leaves the extra field at zero.
+  if(GetProcessMemoryInfo(GetCurrentProcess(),(PROCESS_MEMORY_COUNTERS*)&mem,sizeof mem) && mem.privateWorkingSet)return mem.privateWorkingSet/1048576.;
+  return mem.base.WorkingSetSize/1048576.;
 }
 // Usage since the Library last closed; read just before it opens, so its own window isn't counted.
 ULONGLONG closedSince=GetTickCount64();
@@ -1038,7 +1052,8 @@ ULONGLONG libraryOpenedAt=0;
 // The wallpaper's usage without the Library window, also shown in the tray while the Library is open.
 double withoutCPU=-1,withoutRAM=0,withoutGPU=-1;
 void withoutWindow(double cpu,double ram,double gpu){
-  withoutCPU=cpu;withoutRAM=ram;withoutGPU=gpu;
+  if(cpu>=0)withoutCPU=cpu;
+  withoutRAM=ram;withoutGPU=gpu;
   wchar_t reading[64];
   if(cpu>=0){swprintf_s(reading,L"%.1f%% without this window",cpu);closedValues[0]=reading;}
   swprintf_s(reading,L"≈ %.0f MiB without this window",ram);closedValues[1]=reading;
@@ -2027,6 +2042,9 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         KillTimer(w, 3);
         loadPreview();
       }
+      // Sampled even while minimized or on Settings, because the tray shows the estimate.
+      if (a == 1 && (IsIconic(w) || settingsPage))
+        sampleStats();
       if (a == 1 && !IsIconic(w)) {
         static fs::path shownSource;static bool shownPaused=false,shownSaver=false;
         refreshAccent();
@@ -2506,7 +2524,7 @@ void openLibrary(bool settings = false) {
   }
   double cpu,ram,gpu;closedUsage(cpu,ram,gpu);
   closedRAM=ram;libraryExtraRAM=-1;libraryOpenedAt=GetTickCount64();
-  closedValues[0].clear();
+  closedValues[0].clear();withoutCPU=-1;
   withoutWindow(cpu,ram,gpu);
   libraryFiles.clear();
   auto path = folder / L"library.txt";
@@ -2568,6 +2586,8 @@ void openLibrary(bool settings = false) {
   SendMessage(libraryWindow,WM_SIZE,SIZE_RESTORED,MAKELPARAM(client.right,client.bottom));
   themeWindow(libraryWindow);
   fillList();
+  // A sample left from the last time the Library was open would average over the time it was closed.
+  lastSample=0;
   sampleStats();
   setUiPage(settings);
   SetWindowPos(libraryWindow,nullptr,0,0,0,0,SWP_NOSIZE|SWP_NOMOVE|SWP_NOZORDER|SWP_SHOWWINDOW);

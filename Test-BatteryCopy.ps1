@@ -83,6 +83,14 @@ try {
     Start-Sleep -Seconds 1
     if ((Get-Partial $data) -or (Get-Copies $data)) { throw 'A partial copy was left behind' }
     'exit cancels the conversion'
+    # A killed Litely must not leave its conversion running.
+    $data = New-Data $miyabi 1; $folders += $data
+    $app = Start-Litely $data
+    if (!(Watch-Partial $data 5)) { Stop-Litely $app; throw 'No conversion was running shortly after launch' }
+    $app.Kill(); $app.WaitForExit(); Start-Sleep -Milliseconds 300
+    $left = @(Get-CimInstance Win32_Process -Filter "Name='Litely.exe'" | Where-Object CommandLine -like '*--convert*')
+    if ($left) { $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; throw 'The conversion kept running after Litely was killed' }
+    'killing Litely stops the conversion'
     # Once the copy is made, the encoder's memory must not stay in Litely.
     $data = New-Data $miyabi 0; $folders += $data
     $app = Start-Litely $data -Visible; Start-Sleep -Seconds 20; $app.Refresh(); $base = $app.PrivateMemorySize64; Stop-Litely $app
