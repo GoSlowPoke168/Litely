@@ -13,9 +13,9 @@
   #define DirName "Litely"
   #define SetupName "Litely-Setup"
 #endif
-; Sample wallpapers are whatever MP4s are in SamplesDir; with none, the option is left out.
+; Sample wallpapers are whatever MP4s are in SamplesDir (the Pixabay clips; build\wallpapers holds test clips); with none, the option is left out.
 #ifndef SamplesDir
-  #define SamplesDir "..\build\wallpapers"
+  #define SamplesDir "..\build\samples"
 #endif
 #define SampleBytes 0
 #define FindHandle
