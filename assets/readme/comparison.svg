@@ -9,23 +9,23 @@
 <text x="321.2" y="50" font-size="14" fill="#aab3dd">Litely, Lowest memory</text>
 <text x="32" y="113.0" font-size="15" font-weight="600" fill="#e8ecff">CPU (one core)</text>
 <rect x="182" y="72" width="476.0" height="20" rx="5" fill="#f9a47e"/>
-<text x="668.0" y="87" font-size="14"><tspan fill="#aab3dd">42.2%</tspan></text>
-<rect x="182" y="98" width="117.3" height="20" rx="5" fill="url(#litely)"/>
-<text x="309.3" y="113" font-size="14"><tspan fill="#aab3dd">10.4%</tspan><tspan fill="#7ee2a8" font-weight="600">  75% less</tspan></text>
-<rect x="182" y="124" width="118.4" height="20" rx="5" fill="url(#lowest)"/>
-<text x="310.4" y="139" font-size="14"><tspan fill="#aab3dd">10.5%</tspan><tspan fill="#7ee2a8" font-weight="600">  75% less</tspan></text>
+<text x="668.0" y="87" font-size="14"><tspan fill="#aab3dd">21.8%</tspan></text>
+<rect x="182" y="98" width="117.9" height="20" rx="5" fill="url(#litely)"/>
+<text x="309.9" y="113" font-size="14"><tspan fill="#aab3dd">5.4%</tspan><tspan fill="#7ee2a8" font-weight="600">  75% less</tspan></text>
+<rect x="182" y="124" width="146.3" height="20" rx="5" fill="url(#lowest)"/>
+<text x="338.3" y="139" font-size="14"><tspan fill="#aab3dd">6.7%</tspan><tspan fill="#7ee2a8" font-weight="600">  69% less</tspan></text>
 <text x="32" y="211.0" font-size="15" font-weight="600" fill="#e8ecff">RAM</text>
 <rect x="182" y="170" width="476.0" height="20" rx="5" fill="#f9a47e"/>
-<text x="668.0" y="185" font-size="14"><tspan fill="#aab3dd">640 MiB</tspan></text>
-<rect x="182" y="196" width="58.8" height="20" rx="5" fill="url(#litely)"/>
-<text x="250.8" y="211" font-size="14"><tspan fill="#aab3dd">79 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  88% less</tspan></text>
-<rect x="182" y="222" width="48.3" height="20" rx="5" fill="url(#lowest)"/>
-<text x="240.3" y="237" font-size="14"><tspan fill="#aab3dd">65 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  90% less</tspan></text>
+<text x="668.0" y="185" font-size="14"><tspan fill="#aab3dd">572 MiB</tspan></text>
+<rect x="182" y="196" width="64.9" height="20" rx="5" fill="url(#litely)"/>
+<text x="256.9" y="211" font-size="14"><tspan fill="#aab3dd">78 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  86% less</tspan></text>
+<rect x="182" y="222" width="53.3" height="20" rx="5" fill="url(#lowest)"/>
+<text x="245.3" y="237" font-size="14"><tspan fill="#aab3dd">64 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  89% less</tspan></text>
 <text x="32" y="309.0" font-size="15" font-weight="600" fill="#e8ecff">Video memory</text>
 <rect x="182" y="268" width="476.0" height="20" rx="5" fill="#f9a47e"/>
-<text x="668.0" y="283" font-size="14"><tspan fill="#aab3dd">377 MiB</tspan></text>
-<rect x="182" y="294" width="64.4" height="20" rx="5" fill="url(#litely)"/>
-<text x="256.4" y="309" font-size="14"><tspan fill="#aab3dd">51 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  86% less</tspan></text>
-<rect x="182" y="320" width="30.3" height="20" rx="5" fill="url(#lowest)"/>
-<text x="222.3" y="335" font-size="14"><tspan fill="#aab3dd">24 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  94% less</tspan></text>
+<text x="668.0" y="283" font-size="14"><tspan fill="#aab3dd">376 MiB</tspan></text>
+<rect x="182" y="294" width="64.6" height="20" rx="5" fill="url(#litely)"/>
+<text x="256.6" y="309" font-size="14"><tspan fill="#aab3dd">51 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  86% less</tspan></text>
+<rect x="182" y="320" width="30.4" height="20" rx="5" fill="url(#lowest)"/>
+<text x="222.4" y="335" font-size="14"><tspan fill="#aab3dd">24 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  94% less</tspan></text>
 </svg>

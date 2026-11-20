@@ -12,11 +12,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/RAM-88%25%20less-2EA043?style=for-the-badge" alt="88% less RAM">
-  <img src="https://img.shields.io/badge/Video%20memory-87%25%20less-2EA043?style=for-the-badge" alt="87% less video memory">
+  <img src="https://img.shields.io/badge/RAM-86%25%20less-2EA043?style=for-the-badge" alt="86% less RAM">
+  <img src="https://img.shields.io/badge/Video%20memory-86%25%20less-2EA043?style=for-the-badge" alt="86% less video memory">
   <img src="https://img.shields.io/badge/CPU-75%25%20less-2EA043?style=for-the-badge" alt="75% less CPU">
   <br>
-  <sub>Than Lively Wallpaper, playing the same 1080p 60 fps video on two monitors. <a href="#litely-vs-lively-wallpaper">See the comparison</a></sub>
+  <sub>Than Lively Wallpaper, playing the same 1080p 60 fps video on two 1080p monitors. <a href="#litely-vs-lively-wallpaper">See the comparison</a></sub>
 </p>
 
 <!-- Demo video: edit this file on GitHub, drag an MP4 (under 10 MB) onto the next line, and delete the placeholder image. -->
@@ -28,24 +28,33 @@ Pick a video or GIF and Litely plays it behind your desktop icons, on every moni
 
 ## Litely vs Lively Wallpaper
 
-The same 1080p 60 fps video as the wallpaper on two monitors, on the same laptop. Shorter bars are better.
+Blossom Island, a 1080p 60 fps sample that comes with Litely, as the wallpaper on two 1080p monitors. Shorter bars are better.
 
 <p align="center">
-  <img src="assets/readme/comparison.svg" alt="Litely uses 75% less CPU, 88 to 90% less RAM and 86 to 94% less video memory than Lively Wallpaper" width="820">
+  <img src="assets/readme/comparison.svg" alt="Litely uses 75% less CPU, 86% less RAM and 86% less video memory than Lively Wallpaper" width="820">
 </p>
 
 Litely decodes the video once for all monitors and draws it straight to the desktop. Lively runs a separate player for each monitor.
 
 <details>
-<summary><b>Exact figures</b></summary>
+<summary><b>Exact figures for four videos</b></summary>
 
-| | CPU (one core) | RAM | Video memory | Install size |
+| Video | App | CPU (one core) | RAM | Video memory |
 | --- | --- | --- | --- | --- |
-| Lively Wallpaper | 42.2% | 640 MiB | 377 MiB | 396 MB |
-| Litely | 10.4% $\color{#3fb950}{\textsf{-75\%}}$ | 79 MiB $\color{#3fb950}{\textsf{-88\%}}$ | 51 MiB $\color{#3fb950}{\textsf{-86\%}}$ | 0.8 MB $\color{#3fb950}{\textsf{-99.8\%}}$ |
-| Litely, Lowest memory | 10.5% $\color{#3fb950}{\textsf{-75\%}}$ | 65 MiB $\color{#3fb950}{\textsf{-90\%}}$ | 24 MiB $\color{#3fb950}{\textsf{-94\%}}$ | 0.8 MB $\color{#3fb950}{\textsf{-99.8\%}}$ |
+| Blossom Island (sample) · 1080p 60 fps | Lively Wallpaper | 21.8% | 572 MiB | 376 MiB |
+|  | Litely | 5.4% $\color{#3fb950}{\textsf{-75\%}}$ | 78 MiB $\color{#3fb950}{\textsf{-86\%}}$ | 51 MiB $\color{#3fb950}{\textsf{-86\%}}$ |
+|  | Litely, Lowest memory | 6.7% $\color{#3fb950}{\textsf{-69\%}}$ | 64 MiB $\color{#3fb950}{\textsf{-89\%}}$ | 24 MiB $\color{#3fb950}{\textsf{-94\%}}$ |
+| Anime wallpaper · 1080p 60 fps | Lively Wallpaper | 21.1% | 608 MiB | 376 MiB |
+|  | Litely | 7.3% $\color{#3fb950}{\textsf{-65\%}}$ | 78 MiB $\color{#3fb950}{\textsf{-87\%}}$ | 51 MiB $\color{#3fb950}{\textsf{-86\%}}$ |
+|  | Litely, Lowest memory | 4.4% $\color{#3fb950}{\textsf{-79\%}}$ | 63 MiB $\color{#3fb950}{\textsf{-90\%}}$ | 24 MiB $\color{#3fb950}{\textsf{-94\%}}$ |
+| Anime wallpaper · 1440p 60 fps | Lively Wallpaper | 23.1% | 659 MiB | 588 MiB |
+|  | Litely | 6.0% $\color{#3fb950}{\textsf{-74\%}}$ | 92 MiB $\color{#3fb950}{\textsf{-86\%}}$ | 133 MiB $\color{#3fb950}{\textsf{-77\%}}$ |
+|  | Litely, Lowest memory | 5.0% $\color{#3fb950}{\textsf{-78\%}}$ | 80 MiB $\color{#3fb950}{\textsf{-88\%}}$ | 35 MiB $\color{#3fb950}{\textsf{-94\%}}$ |
+| Rainy Studio (sample) · 1080p 30 fps | Lively Wallpaper | 15.8% | 617 MiB | 376 MiB |
+|  | Litely | 4.1% $\color{#3fb950}{\textsf{-74\%}}$ | 76 MiB $\color{#3fb950}{\textsf{-88\%}}$ | 51 MiB $\color{#3fb950}{\textsf{-86\%}}$ |
+|  | Litely, Lowest memory | 3.0% $\color{#3fb950}{\textsf{-81\%}}$ | 63 MiB $\color{#3fb950}{\textsf{-90\%}}$ | 24 MiB $\color{#3fb950}{\textsf{-94\%}}$ |
 
-[How this was measured](#performance-in-detail)
+Install size: Lively 396 MB, Litely 0.8 MB. [How this was measured](#how-this-was-measured)
 
 </details>
 
@@ -110,61 +119,33 @@ From then on Litely starts with Windows and sits in the system tray. Prefer no i
 
 ## Good to know
 
-- **Lowest memory** is chosen when you add a video. The converted copy is about three times larger than the original and very slightly softer in fine grain. Your original file is kept.
+- **Lowest memory** is chosen when you add a video. The converted copy is up to about three times larger than the original and very slightly softer in fine grain. Your original file is kept.
 - **Smooth resume** (default) keeps the player ready so the video restarts instantly. **Maximum savings** frees it whenever the wallpaper is paused or covered. Switch in **Settings** or the tray menu.
 - **"Without this window"** under the Library's usage readings estimates what the wallpaper uses once the Library is closed. Litely's RAM figures match Task Manager's Memory column.
 - **Only opaque windows count as covering the desktop.** Translucent windows leave the animation running.
 - **Your Windows wallpaper** is set to a still from the video on every virtual desktop, so switching desktops is instant. These stills stay out of Windows' Recent images.
 - **Your Library, settings and converted copies** are kept in `%LOCALAPPDATA%\Litely`. Uninstalling asks whether to delete them.
 
-## Performance in detail
+## When the wallpaper is paused
 
-### Against Lively Wallpaper
+Lively keeps its players loaded while paused. Litely's **Maximum savings** releases its player and video memory entirely; **Smooth resume** keeps a little ready so the video restarts instantly. Litely uses the same when a window covers the desktop.
 
-<details>
-<summary><b>How this was measured</b></summary>
-
-- Both apps were measured from outside the same way: CPU time, working-set RAM and the GPU's dedicated memory, summed over all of each app's processes. Medians of three 20-second runs, alternated, November 17, 2026, on an RTX 4060 laptop.
-- Lively used its default settings with hardware decoding on, except that its pause rules were set to keep playing while another window had focus.
-- Lively runs one mpv player per monitor. On one monitor it measured 25.5% CPU, 469 MiB RAM and 220 MiB video memory.
-- No late frames in any Litely run.
-- RAM here is the working set, which also counts shared Windows code, so it reads higher than Litely's own figures and Task Manager.
-
-</details>
-
-### Against Windows' built-in video player
-
-1080p videos on an RTX 4060 laptop. Lower is better.
-
-| Video | Player | CPU (one core) | RAM | Video memory |
-| --- | --- | --- | --- | --- |
-| 60 fps | Windows' built-in player | 15.1% | 110 MiB | 59.5 MiB |
-| 60 fps | Litely | 10.5% $\color{#3fb950}{\textsf{-30\%}}$ | 79 MiB $\color{#3fb950}{\textsf{-29\%}}$ | 48.5 MiB $\color{#3fb950}{\textsf{-18\%}}$ |
-| 60 fps | Litely, Lowest memory | **8.8%** $\color{#3fb950}{\textsf{-42\%}}$ | **64 MiB** $\color{#3fb950}{\textsf{-42\%}}$ | **21.6 MiB** $\color{#3fb950}{\textsf{-64\%}}$ |
-| 30 fps | Windows' built-in player | 8.2% | 85 MiB | 59.5 MiB |
-| 30 fps | Litely | 5.5% $\color{#3fb950}{\textsf{-33\%}}$ | 72 MiB $\color{#3fb950}{\textsf{-16\%}}$ | 48.5 MiB $\color{#3fb950}{\textsf{-18\%}}$ |
-| 30 fps | Litely, Lowest memory | **4.9%** $\color{#3fb950}{\textsf{-40\%}}$ | **62 MiB** $\color{#3fb950}{\textsf{-27\%}}$ | **21.6 MiB** $\color{#3fb950}{\textsf{-64\%}}$ |
-
-On the same laptop's **Intel UHD Graphics**, Lowest memory saves even more:
-
-| Video | Player | RAM | Video memory |
+| Paused | CPU (one core) | RAM | Video memory |
 | --- | --- | --- | --- |
-| 60 fps | Litely | 158 MiB | 89.8 MiB |
-| 60 fps | Litely, Lowest memory | **76 MiB** $\color{#3fb950}{\textsf{-52\%}}$ | **29.8 MiB** $\color{#3fb950}{\textsf{-67\%}}$ |
+| Lively Wallpaper | 1.9% | 553 MiB | 412 MiB |
+| Litely, Smooth resume | 0.0% | 81 MiB $\color{#3fb950}{\textsf{-85\%}}$ | 59 MiB $\color{#3fb950}{\textsf{-86\%}}$ |
+| Litely, Maximum savings | 0.0% | 33 MiB $\color{#3fb950}{\textsf{-94\%}}$ | 0 MiB $\color{#3fb950}{\textsf{-100\%}}$ |
+| Litely, Lowest memory, Maximum savings | 0.0% | 25 MiB $\color{#3fb950}{\textsf{-95\%}}$ | 0 MiB $\color{#3fb950}{\textsf{-100\%}}$ |
 
-At 2160p, Litely used 173 MiB of video memory and Lowest memory 65 MiB.
+## How this was measured
 
-<details>
-<summary><b>How this was measured</b></summary>
-
-- Process CPU, working-set RAM and local GPU memory while playing. Medians of three 20-second runs per player, alternated in one session, November 17, 2026. Laptop panel plus one external monitor.
-- No late frames in any run, on either GPU. All players show the same picture for the same file.
-- Lowest memory plays a converted copy: about three times larger (24.3 MiB and 11.6 MiB for these 10-second videos), colours and edges unchanged, fine grain slightly smoothed (VMAF 96.9 against the source at 60 fps).
-- The built-in player's cost varies with the display setup: with only the laptop panel it measured 21.0% and 158 MiB at 60 fps, so the savings there are larger.
-- The Intel runs leave out CPU, because Windows copies each frame between the two GPUs outside Litely.
+- November 20, 2026, on a laptop with Intel UHD Graphics driving its panel and an RTX 4060 driving an external monitor, both set to 1920 × 1080.
+- Every app was measured from outside the same way: CPU time, working-set RAM and video memory, summed over all of each app's processes. Video memory is the GPU's dedicated memory, or its shared memory on a GPU where the app has none. Playing figures average two 20-second runs; paused figures are one run.
+- Lively Wallpaper 2.2.1 with default settings and hardware decoding, in its Duplicate layout, which runs one mpv player per monitor. While playing it was set to keep playing when another window had focus; it was paused with its own pause command.
+- Every app played the same original files. Lowest memory played the copy Litely made when the video was added, 1.7 to 3.3 times larger than the original.
+- Litely played every run without a late frame; Lowest memory had one late frame in two of eight 30-second runs.
+- RAM here is the working set, which also counts shared Windows code, so it reads higher than Litely's own figures and Task Manager. Install size leaves out the optional sample videos.
 - AMD graphics are untested. If Lowest memory can't run, Litely plays the file the normal way.
-
-</details>
 
 ## Build from source
 
