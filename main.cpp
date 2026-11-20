@@ -378,9 +378,9 @@ void createOutput(UINT videoWidth, UINT videoHeight, bool nv12) {
     check(f.As(&media));
     check(DCompositionCreateSurfaceHandle(COMPOSITIONOBJECT_ALL_ACCESS, nullptr, &surfaceHandle));
     check(media->CreateSwapChainForCompositionSurfaceHandle(device.Get(), surfaceHandle, &desc, nullptr, &chain));
-    ComPtr<IDXGISwapChain3> colour;
-    check(chain.As(&colour));
-    check(colour->SetColorSpace1(leanColorSpace));
+    ComPtr<IDXGISwapChain3> color;
+    check(chain.As(&color));
+    check(color->SetColorSpace1(leanColorSpace));
     check(compositor->CreateSurfaceFromHandle(surfaceHandle, &content));
   } else {
     check(f->CreateSwapChainForComposition(device.Get(), &desc, nullptr, &chain));
@@ -1290,9 +1290,9 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
           closePlayer();
           openPlayer();
         } else {
-          ComPtr<IDXGISwapChain3> colour;
-          check(chain.As(&colour));
-          check(colour->SetColorSpace1(leanColorSpace));
+          ComPtr<IDXGISwapChain3> color;
+          check(chain.As(&color));
+          check(color->SetColorSpace1(leanColorSpace));
           if (!leanPaused())
             startClock();
         }

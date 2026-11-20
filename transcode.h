@@ -340,7 +340,7 @@ HRESULT transcodeRun(Transcode &t, const fs::path &temp) {
   // The MP4 writer counts time in units of rate x 1000; a rate that isn't whole there gets uneven frame lengths.
   if (UINT64(num) * 1000 % den)
     num = UINT32((UINT64(num) * 1000 + den / 2) / den), den = 1000;
-  // Keep the source's colour tags; untagged video follows the player's height rule.
+  // Keep the source's color tags; untagged video follows the player's height rule.
   if (!s.matrix)
     s.matrix = h >= 720 ? MFVideoTransferMatrix_BT709 : MFVideoTransferMatrix_BT601;
   if (!s.range)

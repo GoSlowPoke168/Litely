@@ -66,7 +66,7 @@ struct UiDC {
 constexpr COLORREF cWindow=RGB(25,27,37),cSidebar=RGB(23,25,35),cRaised=RGB(38,40,54),
   cHover=RGB(42,43,57),cLine=RGB(52,53,65),cInk=RGB(36,27,53),
   cText=RGB(245,243,250),cSoft=RGB(217,215,225),cMuted=RGB(172,174,191),cDisabled=RGB(121,115,134);
-// The accent and everything tinted by it; setAccent derives the family from one light colour.
+// The accent and everything tinted by it; setAccent derives the family from one light color.
 constexpr COLORREF defaultAccent=RGB(215,196,255);
 COLORREF cAccent,cAccentHot,cAccentDown,cAccentOff,cAccentPress,cSelected,cSelectedLine;
 void setAccent(COLORREF a){
@@ -118,7 +118,7 @@ void strokeRound(HDC dc,RECT r,COLORREF color,float radius,float thickness,BYTE 
   Gdiplus::GraphicsPath path;roundPath(path,box,fpx(radius)-w/2);
   Gdiplus::Pen pen(gdip(color,alpha),w);s.g.DrawPath(&pen,&path);
 }
-// Paints the background colour outside a rounded rectangle so image corners are anti-aliased.
+// Paints the background color outside a rounded rectangle so image corners are anti-aliased.
 void roundCorners(HDC dc,RECT r,float radius,COLORREF background){
   Smooth s(dc);auto box=frect(r);Gdiplus::GraphicsPath path(Gdiplus::FillModeAlternate);
   path.AddRectangle(box);roundPath(path,box,fpx(radius));
@@ -1918,7 +1918,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
               BS_AUTOCHECKBOX | WS_GROUP, 105);
       control(L"BUTTON", L"30 fps on battery", BS_AUTOCHECKBOX, 111);
       control(L"BUTTON", L"Match wallpaper", BS_AUTORADIOBUTTON | WS_GROUP, 112);
-      control(L"BUTTON", L"Choose a colour", BS_AUTORADIOBUTTON, 113);
+      control(L"BUTTON", L"Choose a color", BS_AUTORADIOBUTTON, 113);
       control(L"BUTTON", L"Start with Windows", BS_AUTOCHECKBOX | WS_GROUP, 114);
       control(L"BUTTON", L"Remove", BS_OWNERDRAW, 109);
       control(L"BUTTON", L"Settings", BS_OWNERDRAW, 106);
@@ -2409,7 +2409,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         {UiDC mapping(dc);panel(dc,{left,358-o,right,359-o},cLine);panel(dc,{left,566-o,right,567-o},cLine);panel(dc,{left,774-o,right,775-o},cLine);}
         paintText(dc,L"Battery",{left,376-o,right,398-o},15,cText,FW_SEMIBOLD);
         paintText(dc,L"Appearance",{left,584-o,right,606-o},15,cText,FW_SEMIBOLD);
-        paintText(dc,L"Accent colour for buttons, highlights and selection",{left+120,586-o,right,606-o},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
+        paintText(dc,L"Accent color for buttons, highlights and selection",{left+120,586-o,right,606-o},13,cMuted,FW_NORMAL,DT_RIGHT|DT_SINGLELINE|DT_END_ELLIPSIS);
         paintText(dc,L"Startup",{left,792-o,right,814-o},15,cText,FW_SEMIBOLD);
         RestoreDC(dc,saved);
         if(int limit=settingsLimit(r.bottom)){
