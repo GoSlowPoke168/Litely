@@ -159,3 +159,5 @@ See [How Litely works](docs/how-it-works.md) and [Testing](docs/testing.md).
 ## License
 
 Litely is free software under the [GNU General Public License v3](LICENSE).
+
+Copyright © 2026 GoSlowPoke168. The bundled sample videos are from Pixabay and remain under the [Pixabay Content License](https://pixabay.com/service/license-summary/).
