@@ -967,11 +967,16 @@ void activateSource(const fs::path &path) {
   visibility();
 }
 fs::path importVideo(HWND owner, const wchar_t *initialDir);
-void selectFile() {
+// The sample wallpapers the installer adds, where choosing a video starts; empty without them.
+fs::path samplesFolder() {
   wchar_t exe[32768];
   GetModuleFileName(nullptr, exe, 32768);
   auto samples = fs::path(exe).parent_path() / L"wallpapers";
-  auto path = importVideo(controller, fs::is_directory(samples) ? samples.c_str() : nullptr);
+  return fs::is_directory(samples) ? samples : fs::path();
+}
+void selectFile() {
+  auto samples = samplesFolder();
+  auto path = importVideo(controller, samples.empty() ? nullptr : samples.c_str());
   if (path.empty())
     return;
   if (!paused && !source.empty() && posterPath(path) == posterPath(source)) {
@@ -1559,7 +1564,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
       if (paused)
         status(L"Litely - paused");
       if (source.empty() && !startup)
-        selectFile();
+        openLibrary();
     }
     MSG m;
     bool running = true;

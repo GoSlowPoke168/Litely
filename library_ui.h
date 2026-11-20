@@ -1026,6 +1026,8 @@ double videoMemoryMiB(){
     D3DKMT_QUERYSTATISTICS card{};
     card.Type=D3DKMT_QUERYSTATISTICS_ADAPTER;card.AdapterLuid=luid;
     if(D3DKMTQueryStatistics(&card)<0)continue;
+    // The GPU answered; a process that hasn't used it yet has no segments to report, which is 0.
+    read=true;
     ULONGLONG dedicated=0,shared=0;
     for(ULONG s=0;s<card.QueryResult.AdapterInformation.NbSegments;s++){
       D3DKMT_QUERYSTATISTICS segment{};
@@ -1036,7 +1038,6 @@ double videoMemoryMiB(){
       mine.hProcess=GetCurrentProcess();mine.QueryProcessSegment.SegmentId=s;
       if(D3DKMTQueryStatistics(&mine)<0)continue;
       (segment.QueryResult.SegmentInformation.Aperture?shared:dedicated)+=mine.QueryResult.ProcessSegmentInformation.BytesCommitted;
-      read=true;
     }
     // Dedicated memory, as Task Manager counts it; an integrated GPU has none, so its shared memory is the video memory.
     bytes+=dedicated?dedicated:shared;
@@ -2208,7 +2209,8 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         return 0;
       }
       if (id == 101) {
-        auto added = importVideo(w, nullptr);
+        auto samples = samplesFolder();
+        auto added = importVideo(w, samples.empty() ? nullptr : samples.c_str());
         if (!added.empty()) {
           setUiPage(false);
           addLibrary(added);
