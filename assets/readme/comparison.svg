@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="372" viewBox="0 0 880 372" font-family="'Segoe UI', -apple-system, Helvetica, Arial, sans-serif">
+<defs><linearGradient id="litely" x1="0" x2="1"><stop offset="0" stop-color="#6cccfc"/><stop offset="1" stop-color="#778dfc"/></linearGradient><linearGradient id="lowest" x1="0" x2="1"><stop offset="0" stop-color="#778dfc"/><stop offset="1" stop-color="#b48cf0"/></linearGradient></defs>
+<rect width="880" height="372" rx="16" fill="#0b1030"/>
+<rect x="32" y="38" width="14" height="14" rx="3" fill="#f9a47e"/>
+<text x="54" y="50" font-size="14" fill="#aab3dd">Lively Wallpaper</text>
+<rect x="203.6" y="38" width="14" height="14" rx="3" fill="url(#litely)"/>
+<text x="225.6" y="50" font-size="14" fill="#aab3dd">Litely</text>
+<rect x="299.2" y="38" width="14" height="14" rx="3" fill="url(#lowest)"/>
+<text x="321.2" y="50" font-size="14" fill="#aab3dd">Litely, Lowest memory</text>
+<text x="32" y="113.0" font-size="15" font-weight="600" fill="#e8ecff">CPU (one core)</text>
+<rect x="182" y="72" width="476.0" height="20" rx="5" fill="#f9a47e"/>
+<text x="668.0" y="87" font-size="14"><tspan fill="#aab3dd">42.2%</tspan></text>
+<rect x="182" y="98" width="117.3" height="20" rx="5" fill="url(#litely)"/>
+<text x="309.3" y="113" font-size="14"><tspan fill="#aab3dd">10.4%</tspan><tspan fill="#7ee2a8" font-weight="600">  75% less</tspan></text>
+<rect x="182" y="124" width="118.4" height="20" rx="5" fill="url(#lowest)"/>
+<text x="310.4" y="139" font-size="14"><tspan fill="#aab3dd">10.5%</tspan><tspan fill="#7ee2a8" font-weight="600">  75% less</tspan></text>
+<text x="32" y="211.0" font-size="15" font-weight="600" fill="#e8ecff">RAM</text>
+<rect x="182" y="170" width="476.0" height="20" rx="5" fill="#f9a47e"/>
+<text x="668.0" y="185" font-size="14"><tspan fill="#aab3dd">640 MiB</tspan></text>
+<rect x="182" y="196" width="58.8" height="20" rx="5" fill="url(#litely)"/>
+<text x="250.8" y="211" font-size="14"><tspan fill="#aab3dd">79 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  88% less</tspan></text>
+<rect x="182" y="222" width="48.3" height="20" rx="5" fill="url(#lowest)"/>
+<text x="240.3" y="237" font-size="14"><tspan fill="#aab3dd">65 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  90% less</tspan></text>
+<text x="32" y="309.0" font-size="15" font-weight="600" fill="#e8ecff">Video memory</text>
+<rect x="182" y="268" width="476.0" height="20" rx="5" fill="#f9a47e"/>
+<text x="668.0" y="283" font-size="14"><tspan fill="#aab3dd">377 MiB</tspan></text>
+<rect x="182" y="294" width="64.4" height="20" rx="5" fill="url(#litely)"/>
+<text x="256.4" y="309" font-size="14"><tspan fill="#aab3dd">51 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  86% less</tspan></text>
+<rect x="182" y="320" width="30.3" height="20" rx="5" fill="url(#lowest)"/>
+<text x="222.3" y="335" font-size="14"><tspan fill="#aab3dd">24 MiB</tspan><tspan fill="#7ee2a8" font-weight="600">  94% less</tspan></text>
+</svg>

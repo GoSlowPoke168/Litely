@@ -24,47 +24,62 @@
   <img src="assets/readme/placeholder-demo.png" alt="Demo video" width="820">
 </p>
 
-## Why Litely
+Pick a video or GIF and Litely plays it behind your desktop icons, on every monitor. Your GPU does the decoding, playback stops whenever a window or game covers the desktop, and the whole app is one 0.8 MB program.
+
+## Litely vs Lively Wallpaper
+
+The same 1080p 60 fps video as the wallpaper on two monitors, on the same laptop. Shorter bars are better.
+
+<p align="center">
+  <img src="assets/readme/comparison.svg" alt="Litely uses 75% less CPU, 88 to 90% less RAM and 86 to 94% less video memory than Lively Wallpaper" width="820">
+</p>
+
+Litely decodes the video once for all monitors and draws it straight to the desktop. Lively runs a separate player for each monitor.
+
+<details>
+<summary><b>Exact figures</b></summary>
+
+| | CPU (one core) | RAM | Video memory | Install size |
+| --- | --- | --- | --- | --- |
+| Lively Wallpaper | 42.2% | 640 MiB | 377 MiB | 396 MB |
+| Litely | 10.4% $\color{#3fb950}{\textsf{-75\%}}$ | 79 MiB $\color{#3fb950}{\textsf{-88\%}}$ | 51 MiB $\color{#3fb950}{\textsf{-86\%}}$ | 0.8 MB $\color{#3fb950}{\textsf{-99.8\%}}$ |
+| Litely, Lowest memory | 10.5% $\color{#3fb950}{\textsf{-75\%}}$ | 65 MiB $\color{#3fb950}{\textsf{-90\%}}$ | 24 MiB $\color{#3fb950}{\textsf{-94\%}}$ | 0.8 MB $\color{#3fb950}{\textsf{-99.8\%}}$ |
+
+[How this was measured](#performance-in-detail)
+
+</details>
+
+## Features
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <h3>Light on resources</h3>
-      Under 80 MiB of RAM while playing 1080p at 60 fps, about an eighth of what Lively Wallpaper uses. The GPU decodes the video and draws it straight to the desktop.
+      <h3>Out of your way</h3>
+      Stops when a game or window covers the desktop, the PC locks or the screens turn off, and picks up the moment the desktop shows again.
     </td>
     <td width="50%" valign="top">
-      <h3>Gets out of your way</h3>
-      Stops when a game or window covers the desktop, the PC locks or the screens turn off. Starts again the moment the desktop shows.
+      <h3>Every monitor, one decoder</h3>
+      The video fills each monitor, cropped to fit, and is decoded only once for all of them.
     </td>
   </tr>
   <tr>
-    <td valign="top">
-      <h3>One small app</h3>
-      A single 0.8 MB program. Nothing else to install: it converts videos itself.
-    </td>
     <td valign="top">
       <h3>Lowest memory mode</h3>
-      Converts a video once into a form Litely decodes itself, using under 25 MiB of video memory at 1080p.
+      Converts a video once into a form Litely decodes itself, for under 25 MiB of video memory at 1080p.
     </td>
-  </tr>
-  <tr>
     <td valign="top">
       <h3>Almost any video, or a GIF</h3>
       MP4, MKV, MOV, WebM, AVI, WMV, MPEG and GIF, in any format Windows can decode, including HEVC, VP9 and AV1.
     </td>
-    <td valign="top">
-      <h3>Every monitor</h3>
-      One video fills each monitor, cropped to fit, and is decoded only once for all of them.
-    </td>
   </tr>
   <tr>
     <td valign="top">
-      <h3>A Library for your wallpapers</h3>
-      A list or a gallery, one click to switch, and live CPU, RAM and video memory readings for the wallpaper.
+      <h3>Pause on any frame</h3>
+      The paused frame becomes your Windows wallpaper, so the desktop looks the same while Litely is paused or closed.
     </td>
     <td valign="top">
-      <h3>Pause on any frame</h3>
-      Pausing makes the current frame your Windows wallpaper, so the desktop looks the same while Litely is paused or closed.
+      <h3>Kind to your battery</h3>
+      Optionally plays a 30 fps copy on battery, or pauses while Windows Energy Saver is on.
     </td>
   </tr>
 </table>
@@ -73,7 +88,7 @@
 
 <p align="center">
   <img src="assets/readme/library.png" alt="Library" width="820">
-  <br><sub>Library</sub>
+  <br><sub>The Library, with live CPU, RAM and video memory for the wallpaper</sub>
 </p>
 
 <p align="center">
@@ -81,89 +96,30 @@
   <br><sub>Gallery view</sub>
 </p>
 
-## Get started
+## Install
 
 1. Download **Litely-Setup.exe** from [Releases](../../releases/latest) and run it. It installs for your account only, so there's no administrator prompt.
-2. Leave **Start Litely with Windows** ticked so your wallpaper plays after every restart. Tick **Include sample wallpapers** for a few videos to try.
-3. Litely opens its Library. Pick a wallpaper and select **Set wallpaper**, or select **Add video** to use your own.
+2. Litely opens its Library. Pick a sample and select **Set wallpaper**, or select **Add video** to use your own.
 
-After that, Litely lives in the system tray. Click its icon and choose **Open Litely** to get back to the Library.
-
-Prefer no installer? **Litely-portable.zip** on the same page runs from any folder.
+From then on Litely starts with Windows and sits in the system tray. Prefer no installer? **Litely-portable.zip** runs from any folder.
 
 > [!NOTE]
 > Litely isn't code-signed yet, so Windows may say "Windows protected your PC". Select **More info**, then **Run anyway**.
 
 **Requirements:** Windows 10 or 11 (64-bit) and a GPU that decodes H.264 video.
 
-## Using Litely
-
-### The Library
-
-- **Set wallpaper** puts the selected video on your desktop. In the gallery, clicking a tile does the same.
-- **Pause** freezes the wallpaper on its current frame. **Resume** carries on from there.
-- **Remove** takes a wallpaper out of the Library but never deletes the video file. Double-click a wallpaper to rename it. In the gallery, the **⋯** button on a tile does both.
-- The arrow on the divider switches between the list and the gallery.
-- **Litely usage** shows the live CPU, RAM and video memory, and an estimate of each without the Library window open.
-
-### The tray menu
-
-Click or right-click the Litely icon in the system tray:
-
-| Item | What it does |
-| --- | --- |
-| **Wallpaper usage** | Live CPU, RAM and video memory used by the wallpaper |
-| **Open Litely** | Opens the Library |
-| **Choose video...** | Adds a video and puts it on your desktop |
-| **Pause on this frame** / **Resume** | Pauses or resumes the wallpaper |
-| **Performance** | Switches between Smooth resume and Maximum savings |
-| **Settings...** | Opens Settings |
-| **Exit Litely** | Closes Litely; your desktop keeps Litely's last still |
-
-### Adding a video
-
-**Add video** opens the Import window with three choices. Litely keeps your original file either way.
-
-| Choice | Options | What it changes |
-| --- | --- | --- |
-| **Resolution** | Original, 1080p, 720p | A smaller copy uses less memory |
-| **Frame rate** | Original, 30 fps | A 30 fps copy uses less CPU |
-| **Playback** | Standard, **Lowest memory** (default) | Lowest memory converts the video once into a form Litely decodes itself, using about half the video memory |
-
-The window shows an estimate of the saving before you convert, and progress while it converts. Conversion uses your GPU's video encoder when it has one.
-
-A Lowest memory copy is about three times larger than the original and very slightly softer in fine grain. GIFs and MPEG streams (`.mpg`, `.ts`) always get a copy. If Windows has no decoder for a video, Litely names the Microsoft Store extension to install (HEVC, AV1, VP9 or MPEG-2).
-
-## Settings
-
-Open **Settings** from the Library or the tray menu.
-
-| Section | Setting | What it does | Default |
-| --- | --- | --- | --- |
-| Performance | **Smooth resume** | Keeps the player ready, so the video restarts instantly | On |
-| Performance | **Maximum savings** | Frees the player after a pause or two seconds of full coverage, so it uses the least memory | Off |
-| Battery | **Pause when Energy Saver is on** | Pauses the wallpaper on battery while Windows Energy Saver is on | Off |
-| Battery | **30 fps on battery** | Makes a 30 fps copy of the wallpaper once, in the background, and plays it on battery | Off |
-| Appearance | **Match wallpaper** / **Choose a colour** | Sets the accent colour from your wallpaper or from eight colours | Match wallpaper |
-| Startup | **Start with Windows** | Opens Litely quietly in the tray when you sign in | Set by the installer |
-
 ## Good to know
 
-- **Your desktop never goes blank.** Choosing a video also sets a still from it as the Windows wallpaper, on every virtual desktop. Windows shows it while the player starts and after you exit.
-- **Your Recent images stay tidy.** Litely keeps its stills out of **Settings > Personalization > Background > Recent images**.
-- **Covered means opaque.** Translucent and irregular windows can leave the animation running, because only opaque windows count as covering the desktop.
-- **Litely's RAM figures match Task Manager.** The Library and tray show the same number as Task Manager's Memory column. The tables below use the working set, which is higher because it also counts shared Windows code.
-- **Where your data lives.** Your Library, settings and converted copies are in `%LOCALAPPDATA%\Litely`. Uninstalling asks whether to delete them.
+- **Lowest memory** is chosen when you add a video. The converted copy is about three times larger than the original and very slightly softer in fine grain. Your original file is kept.
+- **Smooth resume** (default) keeps the player ready so the video restarts instantly. **Maximum savings** frees it whenever the wallpaper is paused or covered. Switch in **Settings** or the tray menu.
+- **"Without this window"** under the Library's usage readings estimates what the wallpaper uses once the Library is closed. Litely's RAM figures match Task Manager's Memory column.
+- **Only opaque windows count as covering the desktop.** Translucent windows leave the animation running.
+- **Your Windows wallpaper** is set to a still from the video on every virtual desktop, so switching desktops is instant. These stills stay out of Windows' Recent images.
+- **Your Library, settings and converted copies** are kept in `%LOCALAPPDATA%\Litely`. Uninstalling asks whether to delete them.
 
-## Litely vs Lively Wallpaper
+## Performance in detail
 
-The same 1080p 60 fps video on the same laptop, as the wallpaper on both monitors. Lower is better.
-
-| App | CPU (one core) | RAM | Video memory | Install size |
-| --- | --- | --- | --- | --- |
-| Lively Wallpaper | 42.2% | 640 MiB | 377 MiB | 396 MB |
-| Litely | 10.4% (−75%) | 79 MiB (−88%) | 51 MiB (−87%) | 0.8 MB |
-| Litely, Lowest memory | **10.5% (−75%)** | **65 MiB (−90%)** | **24 MiB (−94%)** | **0.8 MB** |
+### Against Lively Wallpaper
 
 <details>
 <summary><b>How this was measured</b></summary>
@@ -171,13 +127,14 @@ The same 1080p 60 fps video on the same laptop, as the wallpaper on both monitor
 - Both apps were measured from outside the same way: CPU time, working-set RAM and the GPU's dedicated memory, summed over all of each app's processes. Medians of three 20-second runs, alternated, November 17, 2026, on an RTX 4060 laptop.
 - Lively used its default settings with hardware decoding on, except that its pause rules were set to keep playing while another window had focus.
 - Lively runs one mpv player per monitor. On one monitor it measured 25.5% CPU, 469 MiB RAM and 220 MiB video memory.
-- Litely decodes once for all monitors. No late frames in any Litely run.
+- No late frames in any Litely run.
+- RAM here is the working set, which also counts shared Windows code, so it reads higher than Litely's own figures and Task Manager.
 
 </details>
 
-## Performance
+### Against Windows' built-in video player
 
-Litely against Windows' built-in video player on 1080p videos, RTX 4060 laptop. Lower is better.
+1080p videos on an RTX 4060 laptop. Lower is better.
 
 | Video | Player | CPU (one core) | RAM | Video memory |
 | --- | --- | --- | --- | --- |
@@ -202,10 +159,10 @@ At 2160p, Litely used 173 MiB of video memory and Lowest memory 65 MiB.
 
 - Process CPU, working-set RAM and local GPU memory while playing. Medians of three 20-second runs per player, alternated in one session, November 17, 2026. Laptop panel plus one external monitor.
 - No late frames in any run, on either GPU. All players show the same picture for the same file.
-- Litely plays the original file untouched. Lowest memory plays a converted copy: about three times larger (24.3 MiB and 11.6 MiB for these 10-second videos), colours and edges unchanged, fine grain slightly smoothed (VMAF 96.9 against the source at 60 fps).
+- Lowest memory plays a converted copy: about three times larger (24.3 MiB and 11.6 MiB for these 10-second videos), colours and edges unchanged, fine grain slightly smoothed (VMAF 96.9 against the source at 60 fps).
 - The built-in player's cost varies with the display setup: with only the laptop panel it measured 21.0% and 158 MiB at 60 fps, so the savings there are larger.
-- The Intel runs leave out CPU because both displays are wired to the NVIDIA GPU, so Windows copies each frame across outside Litely.
-- AMD graphics are untested. If Lowest memory cannot run, Litely plays the file the normal way.
+- The Intel runs leave out CPU, because Windows copies each frame between the two GPUs outside Litely.
+- AMD graphics are untested. If Lowest memory can't run, Litely plays the file the normal way.
 
 </details>
 
@@ -213,8 +170,8 @@ At 2160p, Litely used 173 MiB of video memory and Lowest memory 65 MiB.
 
 Litely is written in C++17 against Win32, Direct3D 11 and Media Foundation.
 
-- **App:** run `build.cmd` with the Visual Studio C++ desktop tools and the Windows SDK installed. It produces `build\Litely.exe`.
-- **Installer and portable zip:** run `installer\build.cmd`, which also needs [Inno Setup 6](https://jrsoftware.org/isinfo.php). It produces `Litely-Setup.exe` and `Litely-portable.zip` in `build\installer`. Sample wallpapers are bundled from `build\samples` when that folder has MP4s.
+- **App:** run `build.cmd` with the Visual Studio C++ desktop tools and the Windows SDK. It produces `build\Litely.exe`.
+- **Installer and portable zip:** run `installer\build.cmd`, which also needs [Inno Setup 6](https://jrsoftware.org/isinfo.php). Sample wallpapers are bundled from `build\samples` when that folder has MP4s.
 
 See [How Litely works](docs/how-it-works.md) and [Testing](docs/testing.md).
 
