@@ -2,9 +2,9 @@ build/
 __pycache__/
 *.pyc
 .superpowers/
-spike/*.exe
-spike/*.obj
-spike/*.raw
-spike/*.png
-spike/*.mp4
-spike/*.h264
+# Local working files, not published
+spike/
+docs/superpowers/
+docs/ui-preview/
+optimize.py
+benchmark_wallpapers.py
