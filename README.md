@@ -62,31 +62,31 @@ Install size: Lively 396 MB, Litely 0.8 MB. [How this was measured](#how-this-wa
 
 <table>
   <tr>
-    <td width="50%" valign="top">
+    <td width="50%" align="center" valign="top">
       <h3>Out of your way</h3>
-      Stops when a game or window covers the desktop, the PC locks or the screens turn off, and picks up the moment the desktop shows again.
+      Stops when a window or game covers the desktop or the PC locks, then resumes right away.
     </td>
-    <td width="50%" valign="top">
+    <td width="50%" align="center" valign="top">
       <h3>Every monitor, one decoder</h3>
       The video fills each monitor, cropped to fit, and is decoded only once for all of them.
     </td>
   </tr>
   <tr>
-    <td valign="top">
+    <td align="center" valign="top">
       <h3>Lowest memory mode</h3>
       Converts a video once into a form Litely decodes itself, for under 25 MiB of video memory at 1080p.
     </td>
-    <td valign="top">
+    <td align="center" valign="top">
       <h3>Almost any video, or a GIF</h3>
-      MP4, MKV, MOV, WebM, AVI, WMV, MPEG and GIF, in any format Windows can decode, including HEVC, VP9 and AV1.
+      MP4, MKV, MOV, WebM, AVI, WMV, MPEG and GIF, including HEVC, VP9 and AV1 video.
     </td>
   </tr>
   <tr>
-    <td valign="top">
+    <td align="center" valign="top">
       <h3>Pause on any frame</h3>
-      The paused frame becomes your Windows wallpaper, so the desktop looks the same while Litely is paused or closed.
+      The paused frame becomes your Windows wallpaper, so the desktop looks the same while Litely is off.
     </td>
-    <td valign="top">
+    <td align="center" valign="top">
       <h3>Kind to your battery</h3>
       Optionally plays a 30 fps copy on battery, or pauses while Windows Energy Saver is on.
     </td>
