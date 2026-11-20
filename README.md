@@ -42,17 +42,17 @@ Litely decodes the video once for all monitors and draws it straight to the desk
 | Video | App | CPU (one core) | RAM | Video memory |
 | --- | --- | --- | --- | --- |
 | Blossom Island (sample) · 1080p 60 fps | Lively Wallpaper | 21.8% | 572 MiB | 376 MiB |
-|  | Litely | 5.4% $\color{#3fb950}{\textsf{-75\%}}$ | 78 MiB $\color{#3fb950}{\textsf{-86\%}}$ | 51 MiB $\color{#3fb950}{\textsf{-86\%}}$ |
-|  | Litely, Lowest memory | 6.7% $\color{#3fb950}{\textsf{-69\%}}$ | 64 MiB $\color{#3fb950}{\textsf{-89\%}}$ | 24 MiB $\color{#3fb950}{\textsf{-94\%}}$ |
+|  | Litely | 5.4% $`\color{#3fb950}{\textsf{-75\%}}`$ | 78 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ | 51 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ |
+|  | Litely, Lowest memory | 6.7% $`\color{#3fb950}{\textsf{-69\%}}`$ | 64 MiB $`\color{#3fb950}{\textsf{-89\%}}`$ | 24 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ |
 | Anime wallpaper · 1080p 60 fps | Lively Wallpaper | 21.1% | 608 MiB | 376 MiB |
-|  | Litely | 7.3% $\color{#3fb950}{\textsf{-65\%}}$ | 78 MiB $\color{#3fb950}{\textsf{-87\%}}$ | 51 MiB $\color{#3fb950}{\textsf{-86\%}}$ |
-|  | Litely, Lowest memory | 4.4% $\color{#3fb950}{\textsf{-79\%}}$ | 63 MiB $\color{#3fb950}{\textsf{-90\%}}$ | 24 MiB $\color{#3fb950}{\textsf{-94\%}}$ |
+|  | Litely | 7.3% $`\color{#3fb950}{\textsf{-65\%}}`$ | 78 MiB $`\color{#3fb950}{\textsf{-87\%}}`$ | 51 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ |
+|  | Litely, Lowest memory | 4.4% $`\color{#3fb950}{\textsf{-79\%}}`$ | 63 MiB $`\color{#3fb950}{\textsf{-90\%}}`$ | 24 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ |
 | Anime wallpaper · 1440p 60 fps | Lively Wallpaper | 23.1% | 659 MiB | 588 MiB |
-|  | Litely | 6.0% $\color{#3fb950}{\textsf{-74\%}}$ | 92 MiB $\color{#3fb950}{\textsf{-86\%}}$ | 133 MiB $\color{#3fb950}{\textsf{-77\%}}$ |
-|  | Litely, Lowest memory | 5.0% $\color{#3fb950}{\textsf{-78\%}}$ | 80 MiB $\color{#3fb950}{\textsf{-88\%}}$ | 35 MiB $\color{#3fb950}{\textsf{-94\%}}$ |
+|  | Litely | 6.0% $`\color{#3fb950}{\textsf{-74\%}}`$ | 92 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ | 133 MiB $`\color{#3fb950}{\textsf{-77\%}}`$ |
+|  | Litely, Lowest memory | 5.0% $`\color{#3fb950}{\textsf{-78\%}}`$ | 80 MiB $`\color{#3fb950}{\textsf{-88\%}}`$ | 35 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ |
 | Rainy Studio (sample) · 1080p 30 fps | Lively Wallpaper | 15.8% | 617 MiB | 376 MiB |
-|  | Litely | 4.1% $\color{#3fb950}{\textsf{-74\%}}$ | 76 MiB $\color{#3fb950}{\textsf{-88\%}}$ | 51 MiB $\color{#3fb950}{\textsf{-86\%}}$ |
-|  | Litely, Lowest memory | 3.0% $\color{#3fb950}{\textsf{-81\%}}$ | 63 MiB $\color{#3fb950}{\textsf{-90\%}}$ | 24 MiB $\color{#3fb950}{\textsf{-94\%}}$ |
+|  | Litely | 4.1% $`\color{#3fb950}{\textsf{-74\%}}`$ | 76 MiB $`\color{#3fb950}{\textsf{-88\%}}`$ | 51 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ |
+|  | Litely, Lowest memory | 3.0% $`\color{#3fb950}{\textsf{-81\%}}`$ | 63 MiB $`\color{#3fb950}{\textsf{-90\%}}`$ | 24 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ |
 
 Install size: Lively 396 MB, Litely 0.8 MB. [How this was measured](#how-this-was-measured)
 
@@ -133,9 +133,9 @@ Lively keeps its players loaded while paused. Litely's **Maximum savings** relea
 | Paused | CPU (one core) | RAM | Video memory |
 | --- | --- | --- | --- |
 | Lively Wallpaper | 1.9% | 553 MiB | 412 MiB |
-| Litely, Smooth resume | 0.0% | 81 MiB $\color{#3fb950}{\textsf{-85\%}}$ | 59 MiB $\color{#3fb950}{\textsf{-86\%}}$ |
-| Litely, Maximum savings | 0.0% | 33 MiB $\color{#3fb950}{\textsf{-94\%}}$ | 0 MiB $\color{#3fb950}{\textsf{-100\%}}$ |
-| Litely, Lowest memory, Maximum savings | 0.0% | 25 MiB $\color{#3fb950}{\textsf{-95\%}}$ | 0 MiB $\color{#3fb950}{\textsf{-100\%}}$ |
+| Litely, Smooth resume | 0.0% | 81 MiB $`\color{#3fb950}{\textsf{-85\%}}`$ | 59 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ |
+| Litely, Maximum savings | 0.0% | 33 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ | 0 MiB $`\color{#3fb950}{\textsf{-100\%}}`$ |
+| Litely, Lowest memory, Maximum savings | 0.0% | 25 MiB $`\color{#3fb950}{\textsf{-95\%}}`$ | 0 MiB $`\color{#3fb950}{\textsf{-100\%}}`$ |
 
 ## How this was measured
 
