@@ -139,18 +139,18 @@ From then on Litely starts with Windows and sits in the system tray. Prefer no i
 | Video | Player | CPU (one core) | RAM | Video memory |
 | --- | --- | --- | --- | --- |
 | 60 fps | Windows' built-in player | 15.1% | 110 MiB | 59.5 MiB |
-| 60 fps | Litely | 10.5% (−30%) | 79 MiB (−29%) | 48.5 MiB (−18%) |
-| 60 fps | Litely, Lowest memory | **8.8% (−42%)** | **64 MiB (−42%)** | **21.6 MiB (−64%)** |
+| 60 fps | Litely | 10.5% $\color{#3fb950}{\textsf{-30\%}}$ | 79 MiB $\color{#3fb950}{\textsf{-29\%}}$ | 48.5 MiB $\color{#3fb950}{\textsf{-18\%}}$ |
+| 60 fps | Litely, Lowest memory | **8.8%** $\color{#3fb950}{\textsf{-42\%}}$ | **64 MiB** $\color{#3fb950}{\textsf{-42\%}}$ | **21.6 MiB** $\color{#3fb950}{\textsf{-64\%}}$ |
 | 30 fps | Windows' built-in player | 8.2% | 85 MiB | 59.5 MiB |
-| 30 fps | Litely | 5.5% (−33%) | 72 MiB (−16%) | 48.5 MiB (−18%) |
-| 30 fps | Litely, Lowest memory | **4.9% (−40%)** | **62 MiB (−27%)** | **21.6 MiB (−64%)** |
+| 30 fps | Litely | 5.5% $\color{#3fb950}{\textsf{-33\%}}$ | 72 MiB $\color{#3fb950}{\textsf{-16\%}}$ | 48.5 MiB $\color{#3fb950}{\textsf{-18\%}}$ |
+| 30 fps | Litely, Lowest memory | **4.9%** $\color{#3fb950}{\textsf{-40\%}}$ | **62 MiB** $\color{#3fb950}{\textsf{-27\%}}$ | **21.6 MiB** $\color{#3fb950}{\textsf{-64\%}}$ |
 
 On the same laptop's **Intel UHD Graphics**, Lowest memory saves even more:
 
 | Video | Player | RAM | Video memory |
 | --- | --- | --- | --- |
 | 60 fps | Litely | 158 MiB | 89.8 MiB |
-| 60 fps | Litely, Lowest memory | **76 MiB (−52%)** | **29.8 MiB (−67%)** |
+| 60 fps | Litely, Lowest memory | **76 MiB** $\color{#3fb950}{\textsf{-52\%}}$ | **29.8 MiB** $\color{#3fb950}{\textsf{-67\%}}$ |
 
 At 2160p, Litely used 173 MiB of video memory and Lowest memory 65 MiB.
 
