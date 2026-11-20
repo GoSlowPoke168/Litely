@@ -1,6 +1,6 @@
 param([Parameter(Mandatory,Position=0,ValueFromRemainingArguments)][string[]]$Clips, [ValidateSet('direct','lean','legacy','any')][string]$Pipeline = 'any')
 $ErrorActionPreference = 'Stop'
-$exe = Join-Path $PSScriptRoot 'build\Litely.exe'
+$exe = Join-Path $PSScriptRoot '..\build\Litely.exe'
 $env:LITELY_PIPELINE = if ($Pipeline -in 'legacy', 'lean') { $Pipeline } else { $null }
 foreach ($clip in $Clips) {
     $file = Get-Item -LiteralPath $clip

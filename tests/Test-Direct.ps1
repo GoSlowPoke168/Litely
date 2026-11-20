@@ -1,5 +1,5 @@
 # The direct GPU decoder against the lean path on a copy made by Litely --convert, plus its fallbacks.
-param([string]$Clip = (Join-Path $PSScriptRoot 'build\wallpapers\hoshimi-miyabi-1080p.mp4'), [int]$Seconds = 12)
+param([string]$Clip = (Join-Path $PSScriptRoot '..\build\wallpapers\hoshimi-miyabi-1080p.mp4'), [int]$Seconds = 12)
 $ErrorActionPreference = 'Stop'
 Add-Type @'
 using System;
@@ -18,7 +18,7 @@ public static class DirectStills {
     }
 }
 '@
-$exe = Join-Path $PSScriptRoot 'build\Litely.exe'
+$exe = Join-Path $PSScriptRoot '..\build\Litely.exe'
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("LitelyDirect-" + [Guid]::NewGuid())
 New-Item -ItemType Directory $scratch | Out-Null
 function Invoke-Probe($file, [hashtable]$Environment = @{}) {

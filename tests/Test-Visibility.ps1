@@ -36,7 +36,7 @@ public class DesktopTest {
 }
 "@
 [void][DesktopTest]::SetProcessDpiAwarenessContext([IntPtr](-4))
-$exe = (Get-Item (Join-Path $PSScriptRoot "build\Litely.exe")).FullName
+$exe = (Get-Item (Join-Path $PSScriptRoot "..\build\Litely.exe")).FullName
 $video = (Get-Item -LiteralPath $Clip).FullName
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("wallpaper-idle-" + [Guid]::NewGuid())
 $config = Join-Path $testRoot "Litely"

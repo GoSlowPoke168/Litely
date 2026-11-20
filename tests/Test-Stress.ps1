@@ -1,4 +1,4 @@
-param([string]$Clip = (Join-Path $PSScriptRoot 'build\wallpapers\hoshimi-miyabi-1080p.mp4'))
+param([string]$Clip = (Join-Path $PSScriptRoot '..\build\wallpapers\hoshimi-miyabi-1080p.mp4'))
 $ErrorActionPreference = 'Stop'
 Add-Type @'
 using System;
@@ -25,7 +25,7 @@ Get-Process Litely -ErrorAction SilentlyContinue | Stop-Process
 Start-Sleep -Milliseconds 500
 $data = Join-Path ([IO.Path]::GetTempPath()) ("LitelyStress-" + [Guid]::NewGuid())
 New-Item -ItemType Directory $data | Out-Null
-$start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSScriptRoot 'build\Litely.exe'), ('"{0}"' -f (Get-Item -LiteralPath $Clip).FullName))
+$start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSScriptRoot '..\build\Litely.exe'), ('"{0}"' -f (Get-Item -LiteralPath $Clip).FullName))
 $start.UseShellExecute = $false
 $start.Environment['LOCALAPPDATA'] = $data
 $start.Environment['LITELY_TEST_SKIP_PERSONALIZATION'] = '1'

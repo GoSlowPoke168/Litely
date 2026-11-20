@@ -17,7 +17,7 @@ public static class BatteryTest {
     }
 }
 '@
-$wallpapers = Join-Path $PSScriptRoot 'build\wallpapers'
+$wallpapers = Join-Path $PSScriptRoot '..\build\wallpapers'
 $miyabi = Join-Path $wallpapers 'hoshimi-miyabi-1080p.mp4'
 $furina = Join-Path $wallpapers 'furina-in-the-void4k-1080p.mp4'
 $ffmpeg = python -c "import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())"
@@ -30,7 +30,7 @@ function New-Data($clip, $batteryFps) {
 function Start-Litely($data, [switch]$Visible) {
     Get-Process Litely -ErrorAction SilentlyContinue | Stop-Process
     Start-Sleep -Milliseconds 400
-    $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSScriptRoot 'build\Litely.exe'))
+    $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSScriptRoot '..\build\Litely.exe'))
     $start.UseShellExecute = $false
     $start.Environment['LOCALAPPDATA'] = $data
     $start.Environment['LITELY_TEST_SKIP_PERSONALIZATION'] = '1'

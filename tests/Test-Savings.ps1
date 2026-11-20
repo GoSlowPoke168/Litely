@@ -18,7 +18,7 @@ public static class Stills {
     }
 }
 '@
-$exe = Join-Path $PSScriptRoot 'build\Litely.exe'
+$exe = Join-Path $PSScriptRoot '..\build\Litely.exe'
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("LitelySavings-" + [Guid]::NewGuid())
 New-Item -ItemType Directory $scratch | Out-Null
 function Invoke-Probe($clip, $pipeline, [switch]$Topmost) {
@@ -48,7 +48,7 @@ function Get-Median($values) { $sorted = @($values | Sort-Object); $sorted[[int]
 $failures = @()
 try {
     foreach ($name in 'hoshimi-miyabi-1080p.mp4', 'furina-in-the-void4k-1080p.mp4') {
-        $clip = Join-Path $PSScriptRoot "build\wallpapers\$name"
+        $clip = Join-Path $PSScriptRoot "..\build\wallpapers\$name"
         $legacy = @(); $lean = @()
         for ($i = 0; $i -lt $Runs; $i++) { $legacy += Invoke-Probe $clip legacy; $lean += Invoke-Probe $clip lean }
         foreach ($metric in @{ Name = 'Cpu'; Limit = 0.7; Format = '{0:P1} of a core' }, @{ Name = 'Ram'; Limit = 0.6; Format = '{0:N1} MiB' }, @{ Name = 'Gpu'; Limit = 0.9; Format = '{0:N1} MiB' }) {
@@ -65,7 +65,7 @@ try {
         if ($difference -gt 1) { $failures += "$name first-frame stills differ by $difference" }
     }
     Write-Warning 'A video window appears at the top-left of the screen for a few seconds.'
-    $clip = Join-Path $PSScriptRoot 'build\wallpapers\furina-in-the-void4k-1080p.mp4'
+    $clip = Join-Path $PSScriptRoot '..\build\wallpapers\furina-in-the-void4k-1080p.mp4'
     $shown = Invoke-Probe $clip lean -Topmost
     $difference = [Stills]::MaxDifference("$($shown.Report).bmp", "$($shown.Report).screen.bmp")
     "paused still vs screen: max channel difference $difference"
