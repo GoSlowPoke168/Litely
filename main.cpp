@@ -1609,15 +1609,16 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
           break;
         }
         bool library = libraryWindow && (m.hwnd == libraryWindow || IsChild(libraryWindow, m.hwnd));
-        ULONG64 before = 0, after = 0;
         if (library)
-          QueryThreadCycleTime(GetCurrentThread(), &before);
+          QueryThreadCycleTime(GetCurrentThread(), &libraryDispatchStart);
         if (!libraryWindow || !IsDialogMessage(libraryWindow, &m)) {
           TranslateMessage(&m);
           DispatchMessage(&m);
         }
-        if (library && QueryThreadCycleTime(GetCurrentThread(), &after))
-          libraryCycles += after - before;
+        if (library) {
+          countLibraryCycles();
+          libraryDispatchStart = 0;
+        }
       }
       if (probe && running) {
         if (phase == 0 && frames >= 5 && !sampleStart) {

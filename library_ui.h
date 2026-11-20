@@ -901,6 +901,7 @@ fs::path importVideo(HWND owner,const wchar_t *initialDir){
   Gdiplus::GdiplusStartupInput input;ULONG_PTR token=0;
   bool drawing=Gdiplus::GdiplusStartup(&token,&input,nullptr)==Gdiplus::Ok;
   auto chosen=DialogBoxParam(instance,MAKEINTRESOURCE(300),owner,importProc,(LPARAM)&job);
+  activeImport=nullptr;
   if(!libraryWindow)freeDrawingCaches();
   if(drawing)Gdiplus::GdiplusShutdown(token);
   if(chosen!=1)return {};
@@ -1005,30 +1006,40 @@ void fillList(const fs::path &preferred = source) {
   loadPreview();
 }
 std::wstring savingsText;
-// Litely's dedicated video memory on every GPU, read from the counter Task Manager shows; -1 when Windows can't say.
-// Litely's dedicated video memory on every GPU, from the same driver statistics Task Manager reads; -1 when unavailable.
+// Litely's video memory on every GPU, from the same driver statistics Task Manager reads; -1 when unavailable.
 double videoMemoryMiB(){
-  ComPtr<IDXGIFactory1> factory;
-  if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))return -1;
+  // The GPUs, listed again every 30 seconds rather than on every reading.
+  static std::vector<LUID> cards;
+  static ULONGLONG listed=0;
+  if(cards.empty() || GetTickCount64()-listed>30000){
+    cards.clear();listed=GetTickCount64();
+    ComPtr<IDXGIFactory1> factory;
+    if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))return -1;
+    ComPtr<IDXGIAdapter1> adapter;
+    for(UINT i=0;factory->EnumAdapters1(i,&adapter)==S_OK;i++,adapter.Reset()){
+      DXGI_ADAPTER_DESC1 about;
+      if(SUCCEEDED(adapter->GetDesc1(&about)))cards.push_back(about.AdapterLuid);
+    }
+  }
   ULONGLONG bytes=0;bool read=false;
-  ComPtr<IDXGIAdapter1> adapter;
-  for(UINT i=0;factory->EnumAdapters1(i,&adapter)==S_OK;i++,adapter.Reset()){
-    DXGI_ADAPTER_DESC1 about;
-    if(FAILED(adapter->GetDesc1(&about)))continue;
+  for(auto luid:cards){
     D3DKMT_QUERYSTATISTICS card{};
-    card.Type=D3DKMT_QUERYSTATISTICS_ADAPTER;card.AdapterLuid=about.AdapterLuid;
+    card.Type=D3DKMT_QUERYSTATISTICS_ADAPTER;card.AdapterLuid=luid;
     if(D3DKMTQueryStatistics(&card)<0)continue;
+    ULONGLONG dedicated=0,shared=0;
     for(ULONG s=0;s<card.QueryResult.AdapterInformation.NbSegments;s++){
       D3DKMT_QUERYSTATISTICS segment{};
-      segment.Type=D3DKMT_QUERYSTATISTICS_SEGMENT;segment.AdapterLuid=about.AdapterLuid;segment.QuerySegment.SegmentId=s;
-      // Aperture segments are shared system memory, which Task Manager doesn't count as dedicated.
-      if(D3DKMTQueryStatistics(&segment)<0 || segment.QueryResult.SegmentInformation.Aperture)continue;
+      segment.Type=D3DKMT_QUERYSTATISTICS_SEGMENT;segment.AdapterLuid=luid;segment.QuerySegment.SegmentId=s;
+      if(D3DKMTQueryStatistics(&segment)<0)continue;
       D3DKMT_QUERYSTATISTICS mine{};
-      mine.Type=D3DKMT_QUERYSTATISTICS_PROCESS_SEGMENT;mine.AdapterLuid=about.AdapterLuid;
+      mine.Type=D3DKMT_QUERYSTATISTICS_PROCESS_SEGMENT;mine.AdapterLuid=luid;
       mine.hProcess=GetCurrentProcess();mine.QueryProcessSegment.SegmentId=s;
       if(D3DKMTQueryStatistics(&mine)<0)continue;
-      bytes+=mine.QueryResult.ProcessSegmentInformation.BytesCommitted;read=true;
+      (segment.QueryResult.SegmentInformation.Aperture?shared:dedicated)+=mine.QueryResult.ProcessSegmentInformation.BytesCommitted;
+      read=true;
     }
+    // Dedicated memory, as Task Manager counts it; an integrated GPU has none, so its shared memory is the video memory.
+    bytes+=dedicated?dedicated:shared;
   }
   return read?bytes/1048576.:-1;
 }
@@ -1046,6 +1057,12 @@ double closedCPU=cpuSeconds();
 std::wstring closedValues[3];
 // Main-thread cycles spent on the Library's own messages, counted by the message loop.
 ULONG64 libraryCycles=0;
+// Where the Library message being handled began, so its modal loops (resizing, dialogs) are counted as they run.
+ULONG64 libraryDispatchStart=0;
+void countLibraryCycles(){
+  ULONG64 now;
+  if(libraryDispatchStart && QueryThreadCycleTime(GetCurrentThread(),&now)){libraryCycles+=now-libraryDispatchStart;libraryDispatchStart=now;}
+}
 // RAM when the Library opened, and how much it added once settled (-1 until measured).
 double closedRAM=0,libraryExtraRAM=-1;
 ULONGLONG libraryOpenedAt=0;
@@ -1055,9 +1072,9 @@ void withoutWindow(double cpu,double ram,double gpu){
   if(cpu>=0)withoutCPU=cpu;
   withoutRAM=ram;withoutGPU=gpu;
   wchar_t reading[64];
-  if(cpu>=0){swprintf_s(reading,L"%.1f%% without this window",cpu);closedValues[0]=reading;}
-  swprintf_s(reading,L"≈ %.0f MiB without this window",ram);closedValues[1]=reading;
-  if(gpu>=0){swprintf_s(reading,L"%.0f MiB without this window",gpu);closedValues[2]=reading;}
+  if(cpu>=0){swprintf_s(reading,L"%.1f%%",cpu);closedValues[0]=reading;}
+  swprintf_s(reading,L"≈ %.0f MiB",ram);closedValues[1]=reading;
+  if(gpu>=0){swprintf_s(reading,L"%.0f MiB",gpu);closedValues[2]=reading;}
   else closedValues[2].clear();
 }
 // CPU is -1 until the Library has been closed for 10 seconds, too short to average.
@@ -1094,12 +1111,15 @@ void sampleStats() {
   if(measuredSource!=source){measuredSource=source;samples=0;previousPlaying=false;}
   bool playing=ready && !paused && !covered && !batteryOverride && !parked;
   static ULONG64 lastProcessCycles=0,lastLibraryCycles=0;
+  countLibraryCycles();
   ULONG64 processCycles=0;QueryProcessCycleTime(GetCurrentProcess(),&processCycles);
   double share=lastSample && processCycles>lastProcessCycles?
     std::min(1.,double(libraryCycles-lastLibraryCycles)/double(processCycles-lastProcessCycles)):0;
   lastProcessCycles=processCycles;lastLibraryCycles=libraryCycles;
   if(libraryExtraRAM<0 && now-libraryOpenedAt>=3000)libraryExtraRAM=std::max(0.,ram-closedRAM);
-  withoutWindow(lastSample?percent*(1-share):-1,libraryExtraRAM<0?closedRAM:ram-libraryExtraRAM,video);
+  // A video converting for the Library would count as the wallpaper's CPU, so the last estimate stays.
+  bool converting=activeImport && activeImport->copy;
+  withoutWindow(lastSample && !converting?percent*(1-share):-1,libraryExtraRAM<0?closedRAM:ram-libraryExtraRAM,video);
   if(lastSample && now-lastSample<2500 && playing && previousPlaying && frames!=previousFrames){
     ++samples;
     playingCPU+=(percent-playingCPU)/std::min(samples,10u);
@@ -2455,6 +2475,12 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
         if(!source.empty())
           paintText(dc,L"·  "+displayName(source),{headingEnd+10,divider+21,right,divider+40},12,mixColor(cWindow,cMuted,previewOpacity));
         int col=(right-left)/3;
+        // One wording for all three columns: the long one only when every column fits it.
+        const wchar_t *without=L" without this window";
+        for(int k=0;k<3;k++)
+          if(!closedValues[k].empty() && paintText(dc,closedValues[k]+without,{0,0,0,0},12,0,FW_NORMAL,DT_CALCRECT|DT_SINGLELINE)>col-(k?30:12)){
+            without=L" if closed";break;
+          }
         for(int k=0;k<3;k++){
           int x=left+col*k;
           if(k){UiDC mapping(dc);panel(dc,{x-1,divider+52,x,divider+112},cLine);x+=18;}
@@ -2464,7 +2490,7 @@ LRESULT CALLBACK libraryProc(HWND w, UINT message, WPARAM a, LPARAM b) {
           int end=x+paintText(dc,value.substr(0,space),{x,divider+68,right,divider+98},23,mixColor(cWindow,cText,previewOpacity),FW_SEMIBOLD,DT_LEFT|DT_TOP|DT_SINGLELINE,textFace());
           if(space!=std::wstring::npos)
             paintText(dc,value.substr(space+1),{end+4,divider+78,right,divider+98},12,mixColor(cWindow,cMuted,previewOpacity));
-          paintText(dc,closedValues[k],{x,divider+96,left+col*(k+1)-12,divider+112},12,mixColor(cWindow,cSoft,previewOpacity),FW_NORMAL,DT_LEFT|DT_TOP|DT_SINGLELINE|DT_END_ELLIPSIS);
+          paintText(dc,closedValues[k].empty()?L"":closedValues[k]+without,{x,divider+96,left+col*(k+1)-12,divider+112},12,mixColor(cWindow,cSoft,previewOpacity),FW_NORMAL,DT_LEFT|DT_TOP|DT_SINGLELINE|DT_END_ELLIPSIS);
         }
         paintText(dc,savingsText,{left,divider+120,right,divider+154},12,mixColor(cWindow,cMuted,previewOpacity),FW_NORMAL,DT_LEFT|DT_WORDBREAK);
       }
