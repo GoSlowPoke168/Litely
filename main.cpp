@@ -16,6 +16,8 @@
 #include <d3d11_1.h>
 #include <dcomp.h>
 #include <dwmapi.h>
+#include <shellscalingapi.h>
+#pragma comment(lib, "shcore.lib")
 #include <dxgi1_4.h>
 #include <filesystem>
 #include <iomanip>
@@ -1026,10 +1028,12 @@ void refreshTrayUsage() {
     wcscpy_s(text, L"Unavailable");
   trayUsage[2] = text;
 }
+// The DPI of the screen the tray menu opens on; the hidden tray window doesn't follow scaling changes.
+UINT menuDpi = 96;
 HFONT menuFont(bool heading = false) {
   static HFONT font, bold;
   static UINT fontDpi;
-  UINT dpi = GetDpiForWindow(controller);
+  UINT dpi = menuDpi;
   if (!font || fontDpi != dpi) {
     NONCLIENTMETRICS metrics{sizeof metrics};
     SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof metrics, &metrics, 0, dpi);
@@ -1085,6 +1089,8 @@ void menu(const POINT *anchor) {
   AppendMenu(m, MF_STRING, 3, L"Exit Litely");
   POINT p;
   if(anchor)p=*anchor;else GetCursorPos(&p);
+  UINT dpiX, dpiY;
+  menuDpi = SUCCEEDED(GetDpiForMonitor(MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST), MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) ? dpiX : GetDpiForWindow(controller);
   SetForegroundWindow(controller);
   // The native popup runs its own message loop until dismissal.
   SetTimer(controller, Draw, USER_TIMER_MINIMUM, nullptr);
@@ -1340,7 +1346,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
       FillRect(dc, &fill, GetSysColorBrush(COLOR_MENU));
       auto old = SelectObject(dc, menuFont());
       SetBkMode(dc, TRANSPARENT);
-      UINT dpi = GetDpiForWindow(controller);
+      UINT dpi = menuDpi;
       // Lines up with the other items' text, which Windows indents past the check-mark column.
       int left = GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi) + MulDiv(8, dpi, 288);
       int top = line / 2;
