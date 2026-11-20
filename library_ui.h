@@ -2618,7 +2618,11 @@ void openLibrary(bool settings = false) {
   lastSample=0;
   sampleStats();
   setUiPage(settings);
+  // Cloaked until its first paint reaches the screen, so it never flashes as an empty white window.
+  BOOL cloak=TRUE;DwmSetWindowAttribute(libraryWindow,DWMWA_CLOAK,&cloak,sizeof cloak);
   SetWindowPos(libraryWindow,nullptr,0,0,0,0,SWP_NOSIZE|SWP_NOMOVE|SWP_NOZORDER|SWP_SHOWWINDOW);
   RedrawWindow(libraryWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+  DwmFlush();
+  cloak=FALSE;DwmSetWindowAttribute(libraryWindow,DWMWA_CLOAK,&cloak,sizeof cloak);
   SetForegroundWindow(libraryWindow);
 }
