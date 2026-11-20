@@ -16,8 +16,6 @@
 #include <d3d11_1.h>
 #include <dcomp.h>
 #include <dwmapi.h>
-#include <shellscalingapi.h>
-#pragma comment(lib, "shcore.lib")
 #include <dxgi1_4.h>
 #include <filesystem>
 #include <iomanip>
@@ -1028,7 +1026,7 @@ void refreshTrayUsage() {
     wcscpy_s(text, L"Unavailable");
   trayUsage[2] = text;
 }
-// The DPI of the screen the tray menu opens on; the hidden tray window doesn't follow scaling changes.
+// The tray menu's scaling, taken from the window that owns it.
 UINT menuDpi = 96;
 HFONT menuFont(bool heading = false) {
   static HFONT font, bold;
@@ -1047,6 +1045,8 @@ HFONT menuFont(bool heading = false) {
   return heading ? bold : font;
 }
 const wchar_t *const usageLabels[3] = {L"CPU", L"RAM", L"Video memory"};
+// Where menu text starts: past the check-mark column, as Windows places its own items.
+int menuTextLeft(UINT dpi) { return GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi) + MulDiv(8, dpi, 288); }
 // Measures the usage block: label column width and line height, in device pixels.
 void usageMetrics(HDC dc, int &labelWidth, int &valueWidth, int &line) {
   auto old = SelectObject(dc, menuFont());
@@ -1058,6 +1058,13 @@ void usageMetrics(HDC dc, int &labelWidth, int &valueWidth, int &line) {
   GetTextExtentPoint32W(dc, L"Unavailable", 11, &size);
   valueWidth = size.cx;
   SelectObject(dc, old);
+}
+// Owns each tray menu. Windows sizes a menu by its owner's scaling, and a window made where the menu opens
+// has that screen's current scaling, which the long-lived hidden tray window misses after a change.
+LRESULT CALLBACK menuHostProc(HWND w, UINT msg, WPARAM a, LPARAM b) {
+  if (msg == WM_MEASUREITEM || msg == WM_DRAWITEM)
+    return SendMessage(controller, msg, a, b);
+  return DefWindowProc(w, msg, a, b);
 }
 void menu(const POINT *anchor) {
   if (menuOpen)
@@ -1071,31 +1078,45 @@ void menu(const POINT *anchor) {
   trayMenu = m;
   AppendMenu(m, MF_SEPARATOR, 0, nullptr);
   SetTimer(controller, UsageTick, 1000, nullptr);
-  AppendMenu(m, MF_STRING, 10, L"Open Litely");
+  // Every item is drawn by Litely, at the menu's own scaling; Windows keeps an old font for its own items.
+  auto item = [](HMENU into, UINT flags, UINT_PTR id, const wchar_t *label) {
+    AppendMenuW(into, flags | MF_OWNERDRAW, id, label);
+  };
+  item(m, 0, 10, L"Open Litely");
   SetMenuDefaultItem(m, 10, FALSE);
-  AppendMenu(m, MF_STRING | (applyingPause ? MF_GRAYED : 0), 1,
-             L"Choose video...");
-  AppendMenu(m, MF_STRING | (source.empty() ? MF_GRAYED : 0), 2,
-             paused ? L"Resume" : L"Pause on this frame");
+  item(m, applyingPause ? MF_GRAYED : 0, 1, L"Choose video...");
+  item(m, source.empty() ? MF_GRAYED : 0, 2, paused ? L"Resume" : L"Pause on this frame");
   AppendMenu(m, MF_SEPARATOR, 0, nullptr);
   HMENU modes = CreatePopupMenu();
-  AppendMenu(modes, MF_STRING, SmoothResume, L"Smooth resume");
-  AppendMenu(modes, MF_STRING, MaximumSavings, L"Maximum savings");
+  item(modes, 0, SmoothResume, L"Smooth resume");
+  item(modes, 0, MaximumSavings, L"Maximum savings");
   CheckMenuRadioItem(modes, SmoothResume, MaximumSavings,
                      maximumSavings ? MaximumSavings : SmoothResume,
                      MF_BYCOMMAND);
-  AppendMenu(m, MF_POPUP, reinterpret_cast<UINT_PTR>(modes), L"Performance");
-  AppendMenu(m, MF_STRING, 11, L"Settings...");
-  AppendMenu(m, MF_STRING, 3, L"Exit Litely");
+  item(m, MF_POPUP, reinterpret_cast<UINT_PTR>(modes), L"Performance");
+  item(m, 0, 11, L"Settings...");
+  item(m, 0, 3, L"Exit Litely");
   POINT p;
   if(anchor)p=*anchor;else GetCursorPos(&p);
-  UINT dpiX, dpiY;
-  menuDpi = SUCCEEDED(GetDpiForMonitor(MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST), MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) ? dpiX : GetDpiForWindow(controller);
-  SetForegroundWindow(controller);
+  static ATOM hostClass = [] {
+    WNDCLASS c{};
+    c.lpfnWndProc = menuHostProc;
+    c.hInstance = instance;
+    c.lpszClassName = L"LitelyMenuHost";
+    return RegisterClass(&c);
+  }();
+  HWND host = hostClass ? CreateWindowEx(WS_EX_TOOLWINDOW, L"LitelyMenuHost", L"", WS_POPUP, p.x, p.y, 1, 1,
+                                         nullptr, nullptr, instance, nullptr)
+                        : nullptr;
+  HWND owner = host ? host : controller;
+  menuDpi = GetDpiForWindow(owner);
+  SetForegroundWindow(owner);
   // The native popup runs its own message loop until dismissal.
   SetTimer(controller, Draw, USER_TIMER_MINIMUM, nullptr);
   int id = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTBUTTON | (anchor ? TPM_BOTTOMALIGN : 0), p.x, p.y, 0,
-                          controller, nullptr);
+                          owner, nullptr);
+  if (host)
+    DestroyWindow(host);
   KillTimer(controller, Draw);
   KillTimer(controller, UsageTick);
   menuDismissTime = GetTickCount();
@@ -1320,6 +1341,18 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
       return 0;
     case WM_MEASUREITEM: {
       auto item = reinterpret_cast<MEASUREITEMSTRUCT *>(b);
+      if (item->CtlType == ODT_MENU && item->itemData) {
+        auto label = reinterpret_cast<const wchar_t *>(item->itemData);
+        HDC dc = GetDC(controller);
+        auto old = SelectObject(dc, menuFont(true));
+        SIZE size{};
+        GetTextExtentPoint32W(dc, label, (int)wcslen(label), &size);
+        SelectObject(dc, old);
+        ReleaseDC(controller, dc);
+        item->itemWidth = size.cx + MulDiv(24, menuDpi, 96);
+        item->itemHeight = size.cy + MulDiv(5, menuDpi, 96);
+        return TRUE;
+      }
       if (item->CtlType != ODT_MENU || item->itemID != UsageItem)
         break;
       HDC dc = GetDC(controller);
@@ -1332,6 +1365,31 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
     }
     case WM_DRAWITEM: {
       auto item = reinterpret_cast<DRAWITEMSTRUCT *>(b);
+      if (item->CtlType == ODT_MENU && item->itemData) {
+        auto label = reinterpret_cast<const wchar_t *>(item->itemData);
+        bool grey = item->itemState & (ODS_GRAYED | ODS_DISABLED), hot = (item->itemState & ODS_SELECTED) && !grey;
+        FillRect(item->hDC, &item->rcItem, GetSysColorBrush(hot ? COLOR_HIGHLIGHT : COLOR_MENU));
+        COLORREF ink = GetSysColor(grey ? COLOR_GRAYTEXT : hot ? COLOR_HIGHLIGHTTEXT : COLOR_MENUTEXT);
+        int left = item->rcItem.left + menuTextLeft(menuDpi);
+        if (item->itemState & ODS_CHECKED) {
+          int r = MulDiv(3, menuDpi, 96), cx = item->rcItem.left + (left - item->rcItem.left) / 2,
+              cy = (item->rcItem.top + item->rcItem.bottom) / 2;
+          HBRUSH dot = CreateSolidBrush(ink);
+          auto oldBrush = SelectObject(item->hDC, dot);
+          auto oldPen = SelectObject(item->hDC, GetStockObject(NULL_PEN));
+          Ellipse(item->hDC, cx - r, cy - r, cx + r + 1, cy + r + 1);
+          SelectObject(item->hDC, oldPen);
+          SelectObject(item->hDC, oldBrush);
+          DeleteObject(dot);
+        }
+        auto old = SelectObject(item->hDC, menuFont((item->itemState & ODS_DEFAULT) != 0));
+        SetBkMode(item->hDC, TRANSPARENT);
+        SetTextColor(item->hDC, ink);
+        RECT text{left, item->rcItem.top, item->rcItem.right, item->rcItem.bottom};
+        DrawTextW(item->hDC, label, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+        SelectObject(item->hDC, old);
+        return TRUE;
+      }
       if (item->CtlType != ODT_MENU || item->itemID != UsageItem)
         break;
       int labelWidth, valueWidth, line;
@@ -1347,8 +1405,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM a, LPARAM b) {
       auto old = SelectObject(dc, menuFont());
       SetBkMode(dc, TRANSPARENT);
       UINT dpi = menuDpi;
-      // Lines up with the other items' text, which Windows indents past the check-mark column.
-      int left = GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi) + MulDiv(8, dpi, 288);
+      int left = menuTextLeft(dpi);
       int top = line / 2;
       // Says whose usage this is: with the Library closed, Litely is only playing the wallpaper.
       RECT heading{left, top, boxWidth, top + line};
