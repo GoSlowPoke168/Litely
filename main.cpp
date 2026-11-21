@@ -794,6 +794,9 @@ BOOL CALLBACK subtractWindow(HWND w, LPARAM arg) {
   auto style = GetWindowLongPtr(w, GWL_EXSTYLE);
   if (style & WS_EX_TRANSPARENT)
     return TRUE;
+  // Always-on-top tool windows are overlays, like the screenshot tool's dimmed screen; pausing for them stalls the capture.
+  if ((style & (WS_EX_TOPMOST | WS_EX_TOOLWINDOW)) == (WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
+    return TRUE;
   if (style & WS_EX_LAYERED) {
     BYTE alpha{};
     DWORD flags{};
