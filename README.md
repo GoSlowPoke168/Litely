@@ -110,7 +110,7 @@ Install size: Lively 396 MB, Litely 0.8 MB. [How this was measured](#how-this-wa
 1. Download **Litely-Setup.exe** from [Releases](../../releases/latest) and run it. It installs for your account only, so there's no administrator prompt.
 2. Litely opens its Library. Pick a sample and select **Set wallpaper**, or select **Add video** to use your own.
 
-From then on Litely starts with Windows and sits in the system tray. Prefer no installer? **Litely-portable.zip** runs from any folder.
+From then on Litely starts with Windows and sits in the system tray. Prefer no installer? **Litely-portable.zip** runs from any folder, and **Litely-samples.zip** has the sample videos with their sources.
 
 > [!NOTE]
 > Litely isn't code-signed yet, so Windows may say "Windows protected your PC". Select **More info**, then **Run anyway**.

@@ -62,6 +62,7 @@ Source: "..\build\Litely.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 #if SampleBytes > 0
 Source: "{#SamplesDir}\*.mp4"; DestDir: "{app}\wallpapers"; Tasks: samples; Flags: ignoreversion
+Source: "{#SamplesDir}\README.txt"; DestDir: "{app}\wallpapers"; Tasks: samples; Flags: ignoreversion skipifsourcedoesntexist
 #endif
 
 [Icons]
