@@ -42,17 +42,17 @@ Litely decodes the video once for all monitors and draws it straight to the desk
 | Video | App | CPU (one core) | RAM | Video memory |
 | --- | --- | --- | --- | --- |
 | Blossom Island (sample) · 1080p 60 fps | Lively Wallpaper | 21.8% | 572 MiB | 376 MiB |
-|  | Litely | 5.4% $`\color{#3fb950}{\textsf{-75\%}}`$ | 78 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ | 51 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ |
-|  | Litely, Lowest memory | 6.7% $`\color{#3fb950}{\textsf{-69\%}}`$ | 64 MiB $`\color{#3fb950}{\textsf{-89\%}}`$ | 24 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ |
+|  | Litely | 5.4% ![−75%](https://img.shields.io/badge/%E2%88%9275%25-2EA043) | 78 MiB ![−86%](https://img.shields.io/badge/%E2%88%9286%25-2EA043) | 51 MiB ![−86%](https://img.shields.io/badge/%E2%88%9286%25-2EA043) |
+|  | Litely, Lowest memory | 6.7% ![−69%](https://img.shields.io/badge/%E2%88%9269%25-2EA043) | 64 MiB ![−89%](https://img.shields.io/badge/%E2%88%9289%25-2EA043) | 24 MiB ![−94%](https://img.shields.io/badge/%E2%88%9294%25-2EA043) |
 | Anime wallpaper · 1080p 60 fps | Lively Wallpaper | 21.1% | 608 MiB | 376 MiB |
-|  | Litely | 7.3% $`\color{#3fb950}{\textsf{-65\%}}`$ | 78 MiB $`\color{#3fb950}{\textsf{-87\%}}`$ | 51 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ |
-|  | Litely, Lowest memory | 4.4% $`\color{#3fb950}{\textsf{-79\%}}`$ | 63 MiB $`\color{#3fb950}{\textsf{-90\%}}`$ | 24 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ |
+|  | Litely | 7.3% ![−65%](https://img.shields.io/badge/%E2%88%9265%25-2EA043) | 78 MiB ![−87%](https://img.shields.io/badge/%E2%88%9287%25-2EA043) | 51 MiB ![−86%](https://img.shields.io/badge/%E2%88%9286%25-2EA043) |
+|  | Litely, Lowest memory | 4.4% ![−79%](https://img.shields.io/badge/%E2%88%9279%25-2EA043) | 63 MiB ![−90%](https://img.shields.io/badge/%E2%88%9290%25-2EA043) | 24 MiB ![−94%](https://img.shields.io/badge/%E2%88%9294%25-2EA043) |
 | Anime wallpaper · 1440p 60 fps | Lively Wallpaper | 23.1% | 659 MiB | 588 MiB |
-|  | Litely | 6.0% $`\color{#3fb950}{\textsf{-74\%}}`$ | 92 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ | 133 MiB $`\color{#3fb950}{\textsf{-77\%}}`$ |
-|  | Litely, Lowest memory | 5.0% $`\color{#3fb950}{\textsf{-78\%}}`$ | 80 MiB $`\color{#3fb950}{\textsf{-88\%}}`$ | 35 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ |
+|  | Litely | 6.0% ![−74%](https://img.shields.io/badge/%E2%88%9274%25-2EA043) | 92 MiB ![−86%](https://img.shields.io/badge/%E2%88%9286%25-2EA043) | 133 MiB ![−77%](https://img.shields.io/badge/%E2%88%9277%25-2EA043) |
+|  | Litely, Lowest memory | 5.0% ![−78%](https://img.shields.io/badge/%E2%88%9278%25-2EA043) | 80 MiB ![−88%](https://img.shields.io/badge/%E2%88%9288%25-2EA043) | 35 MiB ![−94%](https://img.shields.io/badge/%E2%88%9294%25-2EA043) |
 | Rainy Studio (sample) · 1080p 30 fps | Lively Wallpaper | 15.8% | 617 MiB | 376 MiB |
-|  | Litely | 4.1% $`\color{#3fb950}{\textsf{-74\%}}`$ | 76 MiB $`\color{#3fb950}{\textsf{-88\%}}`$ | 51 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ |
-|  | Litely, Lowest memory | 3.0% $`\color{#3fb950}{\textsf{-81\%}}`$ | 63 MiB $`\color{#3fb950}{\textsf{-90\%}}`$ | 24 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ |
+|  | Litely | 4.1% ![−74%](https://img.shields.io/badge/%E2%88%9274%25-2EA043) | 76 MiB ![−88%](https://img.shields.io/badge/%E2%88%9288%25-2EA043) | 51 MiB ![−86%](https://img.shields.io/badge/%E2%88%9286%25-2EA043) |
+|  | Litely, Lowest memory | 3.0% ![−81%](https://img.shields.io/badge/%E2%88%9281%25-2EA043) | 63 MiB ![−90%](https://img.shields.io/badge/%E2%88%9290%25-2EA043) | 24 MiB ![−94%](https://img.shields.io/badge/%E2%88%9294%25-2EA043) |
 
 Install size: Lively 396 MB, Litely 0.8 MB. [How this was measured](#how-this-was-measured)
 
@@ -133,9 +133,9 @@ Lively keeps its players loaded while paused. Litely's **Maximum savings** relea
 | Paused | CPU (one core) | RAM | Video memory |
 | --- | --- | --- | --- |
 | Lively Wallpaper | 1.9% | 553 MiB | 412 MiB |
-| Litely, Smooth resume | 0.0% | 81 MiB $`\color{#3fb950}{\textsf{-85\%}}`$ | 59 MiB $`\color{#3fb950}{\textsf{-86\%}}`$ |
-| Litely, Maximum savings | 0.0% | 33 MiB $`\color{#3fb950}{\textsf{-94\%}}`$ | 0 MiB $`\color{#3fb950}{\textsf{-100\%}}`$ |
-| Litely, Lowest memory, Maximum savings | 0.0% | 25 MiB $`\color{#3fb950}{\textsf{-95\%}}`$ | 0 MiB $`\color{#3fb950}{\textsf{-100\%}}`$ |
+| Litely, Smooth resume | 0.0% | 81 MiB ![−85%](https://img.shields.io/badge/%E2%88%9285%25-2EA043) | 59 MiB ![−86%](https://img.shields.io/badge/%E2%88%9286%25-2EA043) |
+| Litely, Maximum savings | 0.0% | 33 MiB ![−94%](https://img.shields.io/badge/%E2%88%9294%25-2EA043) | 0 MiB ![−100%](https://img.shields.io/badge/%E2%88%92100%25-2EA043) |
+| Litely, Lowest memory, Maximum savings | 0.0% | 25 MiB ![−95%](https://img.shields.io/badge/%E2%88%9295%25-2EA043) | 0 MiB ![−100%](https://img.shields.io/badge/%E2%88%92100%25-2EA043) |
 
 ## How this was measured
 
